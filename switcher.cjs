@@ -898,7 +898,7 @@ const srv = http.createServer(async (req,res)=>{
           // Static file serving
       if(method==='GET' && p.startsWith('/') && p !== '/api/status' && !p.startsWith('/api/')){
         // Try to serve as static file from SCRIPT_DIR
-        const rel = p.replace(/^\\/+/, '');
+        const rel = p.replace(/^\/+|\.\./g, '');
         if(rel && !rel.includes('..')){
           const fp = path.join(SCRIPT_DIR, rel);
           if(fs.existsSync(fp) && fs.statSync(fp).isFile()){
