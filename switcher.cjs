@@ -867,8 +867,6 @@ const srv = http.createServer(async (req,res)=>{
       res.end(content);
       return;
     }
-    // 404 for unknown paths (not /api/* and not /)
-    if(!p.startsWith('/api/')) { json(res,{error:'Not found: '+p},404); return; }
         if(method==='POST'&&p==='/api/open-path'){
         let body='';
         req.on('data', c => body += c);
