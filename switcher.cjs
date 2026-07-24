@@ -860,12 +860,15 @@ const srv = http.createServer(async (req,res)=>{
       }
     }
 
-    // HTML (static)
-    if(fs.existsSync(HTML)) {
+    // HTML root (only for /)
+    if(p === '/' && fs.existsSync(HTML)) {
       const content=fs.readFileSync(HTML,'utf8');
       res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Access-Control-Allow-Origin':'*'});
       res.end(content);
-    } else { json(res,{error:'No frontend'},404); }
+      return;
+    }
+    // 404 for unknown paths (not /api/* and not /)
+    if(!p.startsWith('/api/')) { json(res,{error:'Not found: '+p},404); return; }
         if(method==='POST'&&p==='/api/open-path'){
         let body='';
         req.on('data', c => body += c);
