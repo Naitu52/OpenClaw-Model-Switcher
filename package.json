@@ -1,7 +1,7 @@
 {
   "name": "openclaw-model-switcher",
-  "version": "6.1.0",
-  "description": "Portable web UI for managing OpenClaw agents, models, providers, and Feishu bot bindings. Cross-platform, env-var configured, runs anywhere Node.js runs.",
+  "version": "6.2.0",
+  "description": "Portable web UI for managing OpenClaw agents, models, providers, and Feishu bot bindings. Cross-platform, env-var configured, runs anywhere Node.js runs. Includes local Vue bundle (no CDN) and 📂 open-folder button.",
   "main": "switcher.cjs",
   "scripts": {
     "start": "node switcher.cjs",
@@ -28,12 +28,14 @@
   "license": "MIT",
   "files": [
     "switcher.cjs",
-    "switcher.cjs.v1-original",
     "index.html",
-    "\u542f\u52a8Switcher.bat",
-    "\u542f\u52a8Switcher.bat.v1",
-    "\u542f\u52a8Switcher.bat.legacy",
+    "vue.global.prod.js",
+    "启动Switcher.bat",
+    "一键部署.bat",
+    "停止Switcher.bat",
+    "重启Switcher.bat",
     "README.md",
+    "INSTALL.md",
     "test/smoke.js",
     "scenes.json.example",
     ".gitignore"

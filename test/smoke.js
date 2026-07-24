@@ -25,7 +25,7 @@ const SWITCHER_CJS = path.join(SWITCHER_DIR, 'switcher.cjs');
 const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'switcher-smoke-'));
 const FAKE_HOME = path.join(TMP_ROOT, '.openclaw');
 const FAKE_WS   = path.join(TMP_ROOT, 'workspace');
-const TEST_PORT = 2399;
+const TEST_PORT = 38291;
 
 function buildFakeConfig() {
     fs.mkdirSync(FAKE_HOME, { recursive: true });
