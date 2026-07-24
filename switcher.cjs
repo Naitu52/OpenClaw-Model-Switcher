@@ -577,6 +577,7 @@ const srv = http.createServer(async (req,res)=>{
     if(method==='GET'&&p==='/api/backups') return json(res,getBackups());
     if(method==='GET'&&p==='/api/scenes') return json(res,getScenes());
     if(method==='GET'&&p==='/api/log') return json(res,{lines:getLog()});
+      if(method==='GET'&&p==='/api/paths') return json(res,{backupDir:BACKUP_DIR,log:LOG,scenes:SCENES,openclawHome:OPENCLAW_HOME,userData:USER_DATA_DIR});
     const fm=p.match(/^\/api\/agent\/([^/]+)\/files$/);
     if(method==='GET'&&fm) {
       const ws=path.join(WS_ROOT,fm[1]); if(!fs.existsSync(ws)) return json(res,[]);
@@ -865,7 +866,36 @@ const srv = http.createServer(async (req,res)=>{
       res.writeHead(200,{'Content-Type':'text/html; charset=utf-8','Access-Control-Allow-Origin':'*'});
       res.end(content);
     } else { json(res,{error:'No frontend'},404); }
-  } catch(e) { log('ERR: '+e.message); json(res,{error:e.message},500); }
+        if(method==='POST'&&p==='/api/open-path'){
+        let body='';
+        req.on('data', c => body += c);
+        await new Promise(r => req.on('end', r));
+        const j = JSON.parse(body || '{}');
+        const p = String(j.path || '');
+        // Whitelist: BACKUP_DIR, parent of BACKUP_DIR, parent of LOG, parent of SCENES, OPENCLAW_HOME
+        const norm = p.replace(/\\/g, '/');
+        const allowed = [
+          BACKUP_DIR,
+          path.dirname(BACKUP_DIR),
+          path.dirname(LOG),
+          path.dirname(SCENES),
+          OPENCLAW_HOME
+        ].filter(Boolean).map(x => x.replace(/\\/g, '/').replace(/\//g, '/'));
+        const ok = allowed.some(a => {
+          const an = a.replace(/\\/g, '/');
+          return norm === an || norm.startsWith(an + (an.endsWith('/') ? '' : '/'));
+        });
+        if (!ok) return json(res, { error: 'path not whitelisted: ' + p }, 403);
+        const { spawn } = require('child_process');
+        if (process.platform === 'win32') {
+          spawn('cmd', ['/c', 'start', '""', p], { detached: true, stdio: 'ignore' });
+        } else {
+          spawn('xdg-open', [p], { detached: true, stdio: 'ignore' });
+        }
+        log('Open: ' + p);
+        return json(res, { status: 'ok', path: p });
+      }
+    } catch(e) { log('ERR: '+e.message); json(res,{error:e.message},500); }
 });
 
 // ---- 端口冲突自动重试 ----
