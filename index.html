@@ -246,7 +246,12 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div class="card">
     <div class="f" style="justify-content:space-between">
       <div class="hdr">💾 备份 <span class="badge tggy">{{ backups.length }}</span></div>
-      <button class="btn xs sec" @click="loadBackups">⟳</button>
+      <button class="btn xs sec" @click="loadBackups">⟳</button>    </div>
+    <div style="font-size:10px;color:#86868b;margin:2px 0 6px 0;word-break:break-all;line-height:1.4">
+      实际目录: <span style="font-family:monospace;color:#1d1d1f">{{ paths.backupDir || '加载中...' }}</span>
+      <button class="btn xs scc" style="margin-left:6px;padding:1px 6px" @click="openFolder(paths.backupDir)" :disabled="!paths.backupDir">📂 打开</button>
+    </div>
+    <div class="kr" v-for="b in backups" :key="b.name">
     </div>
     <div class="kr" v-for="b in backups" :key="b.name">
       <span style="font-size:10px;color:#86868b;width:150px">{{ b.time }}</span>
@@ -526,7 +531,7 @@ createApp({
   setup() {
     // State
     const agents = ref([]); const models = ref([]); const providers = ref([]);
-    const catalog = ref([]); const backups = ref([]); const logs = ref([]); const scenes = ref([]);
+    const catalog = ref([]); const backups = ref([]); const logs = ref([]); const scenes = ref([]); const paths = ref({});
     const status = ref({}); const loading = ref(true);
     const msg = ref(''); const msgOk = ref(true); const toast = ref({show:false,msg:'',type:'ok'});
     const kf = ref({provider:'',apiKey:'',baseUrl:''}); const kr = ref(null); const kl = ref(false);
@@ -602,11 +607,19 @@ createApp({
     async function loadLogs(){const d=await api('/api/log');logs.value=d.lines}
     async function loadScenes(){scenes.value=await api('/api/scenes')}
     async function loadStatus(){status.value=await api('/api/status')}
+    async function loadPaths(){paths.value=await api('/api/paths')}
+    async function openFolder(p){
+      if(!p) return;
+      try{
+        const r=await api('/api/open-path?path='+encodeURIComponent(p));
+        if(r.error) showToast('打开失败: '+r.error,'err');
+      } catch(e){ showToast('打开失败: '+e.message,'err'); }
+    }
 
     async function refresh(){
       loading.value=true;
       try{
-        await Promise.all([loadAgents(),loadModels(),loadProviders(),loadCatalog(),loadBackups(),loadLogs(),loadScenes(),loadStatus(),loadFeishu(),loadFeishuDiag()]);
+        await Promise.all([loadAgents(),loadModels(),loadProviders(),loadCatalog(),loadBackups(),loadLogs(),loadScenes(),loadStatus(),loadPaths(),loadFeishu(),loadFeishuDiag()]);
       }catch(e){showToast('加载失败: '+e.message,'err')}
       loading.value=false;
     }
@@ -844,7 +857,7 @@ createApp({
       showGuidedBot,guidedBot,reg,regQrUrl,regMsg,regBotKey,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
-      loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,
+      loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,loadPaths,openFolder,
       loadFeishu,getFeishuBinding,openFeishuBotModal,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
       startFeishuReg,pollReg,saveRegBot,closeGuidedBot
     };
