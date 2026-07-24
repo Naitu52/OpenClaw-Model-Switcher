@@ -885,7 +885,7 @@ const srv = http.createServer(async (req,res)=>{
       const { spawn } = require('child_process');
       try {
         if (process.platform === 'win32') {
-          spawn('cmd', ['/c', 'start', '""', reqPath], { detached: true, stdio: 'ignore' });
+          spawn('explorer.exe', [reqPath], { detached: true, stdio: 'ignore' });
         } else {
           spawn('xdg-open', [reqPath], { detached: true, stdio: 'ignore' });
         }
