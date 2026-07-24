@@ -867,35 +867,34 @@ const srv = http.createServer(async (req,res)=>{
       res.end(content);
       return;
     }
-        if(method==='POST'&&p==='/api/open-path'){
-        let body='';
-        req.on('data', c => body += c);
-        await new Promise(r => req.on('end', r));
-        const j = JSON.parse(body || '{}');
-        const p = String(j.path || '');
-        // Whitelist: BACKUP_DIR, parent of BACKUP_DIR, parent of LOG, parent of SCENES, OPENCLAW_HOME
-        const norm = p.replace(/\\/g, '/');
-        const allowed = [
-          BACKUP_DIR,
-          path.dirname(BACKUP_DIR),
-          path.dirname(LOG),
-          path.dirname(SCENES),
-          OPENCLAW_HOME
-        ].filter(Boolean).map(x => x.replace(/\\/g, '/').replace(/\//g, '/'));
-        const ok = allowed.some(a => {
-          const an = a.replace(/\\/g, '/');
-          return norm === an || norm.startsWith(an + (an.endsWith('/') ? '' : '/'));
-        });
-        if (!ok) return json(res, { error: 'path not whitelisted: ' + p }, 403);
-        const { spawn } = require('child_process');
+        if(method==='GET' && p==='/api/open-path'){
+      const reqPath = String(q.path || '');
+      if (!reqPath) return json(res, { error: 'missing path query param' }, 400);
+      const norm = reqPath.replace(/\\/g, '/');
+      const allowed = [
+        BACKUP_DIR,
+        path.dirname(BACKUP_DIR),
+        path.dirname(LOG),
+        path.dirname(SCENES),
+        OPENCLAW_HOME
+      ].filter(Boolean).map(x => x.replace(/\\/g, '/'));
+      const ok = allowed.some(a => {
+        return norm === a || norm.startsWith(a + (a.endsWith('/') ? '' : '/'));
+      });
+      if (!ok) return json(res, { error: 'path not whitelisted: ' + reqPath }, 403);
+      const { spawn } = require('child_process');
+      try {
         if (process.platform === 'win32') {
-          spawn('cmd', ['/c', 'start', '""', p], { detached: true, stdio: 'ignore' });
+          spawn('cmd', ['/c', 'start', '""', reqPath], { detached: true, stdio: 'ignore' });
         } else {
-          spawn('xdg-open', [p], { detached: true, stdio: 'ignore' });
+          spawn('xdg-open', [reqPath], { detached: true, stdio: 'ignore' });
         }
-        log('Open: ' + p);
-        return json(res, { status: 'ok', path: p });
+        log('Open: ' + reqPath);
+        return json(res, { status: 'ok', path: reqPath });
+      } catch (e) {
+        return json(res, { error: 'spawn failed: ' + e.message }, 500);
       }
+    }
           // Static file serving
       if(method==='GET' && p.startsWith('/') && p !== '/api/status' && !p.startsWith('/api/')){
         // Try to serve as static file from SCRIPT_DIR
