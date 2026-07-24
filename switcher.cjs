@@ -895,6 +895,27 @@ const srv = http.createServer(async (req,res)=>{
         log('Open: ' + p);
         return json(res, { status: 'ok', path: p });
       }
+          // Static file serving
+      if(method==='GET' && p.startsWith('/') && p !== '/api/status' && !p.startsWith('/api/')){
+        // Try to serve as static file from SCRIPT_DIR
+        const rel = p.replace(/^\\/+/, '');
+        if(rel && !rel.includes('..')){
+          const fp = path.join(SCRIPT_DIR, rel);
+          if(fs.existsSync(fp) && fs.statSync(fp).isFile()){
+            const ext = path.extname(fp).toLowerCase();
+            const mime = ext === '.js' ? 'application/javascript; charset=utf-8'
+                       : ext === '.css' ? 'text/css; charset=utf-8'
+                       : ext === '.json' ? 'application/json; charset=utf-8'
+                       : ext === '.png' ? 'image/png'
+                       : ext === '.svg' ? 'image/svg+xml'
+                       : 'application/octet-stream';
+            const content = fs.readFileSync(fp);
+            res.writeHead(200, { 'content-type': mime, 'cache-control': 'public, max-age=3600' });
+            res.end(content);
+            return;
+          }
+        }
+      }
     } catch(e) { log('ERR: '+e.message); json(res,{error:e.message},500); }
 });
 
