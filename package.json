@@ -1,0 +1,46 @@
+{
+  "name": "openclaw-model-switcher",
+  "version": "6.1.0",
+  "description": "Portable web UI for managing OpenClaw agents, models, providers, and Feishu bot bindings. Cross-platform, env-var configured, runs anywhere Node.js runs.",
+  "main": "switcher.cjs",
+  "scripts": {
+    "start": "node switcher.cjs",
+    "smoke": "node test/smoke.js",
+    "test": "node test/smoke.js",
+    "verify": "node -c switcher.cjs && node -c test/smoke.js",
+    "prepack": "node -e \"console.log('Building portable v6.1 tarball...')\""
+  },
+  "bin": {
+    "openclaw-switcher": "switcher.cjs"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "openclaw",
+    "model-switcher",
+    "agent",
+    "feishu",
+    "llm",
+    "config-editor",
+    "portable"
+  ],
+  "license": "MIT",
+  "files": [
+    "switcher.cjs",
+    "switcher.cjs.v1-original",
+    "index.html",
+    "\u542f\u52a8Switcher.bat",
+    "\u542f\u52a8Switcher.bat.v1",
+    "\u542f\u52a8Switcher.bat.legacy",
+    "README.md",
+    "test/smoke.js",
+    "scenes.json.example",
+    ".gitignore"
+  ],
+  "preferGlobal": false,
+  "private": false,
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,855 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Model Switcher</title>
+<script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f;padding:12px}
+.c{max-width:1200px;margin:0 auto}
+.h1{font-size:20px;font-weight:600;margin-bottom:2px}
+.sub{color:#6e6e73;font-size:12px;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.card{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+.hdr{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
+.hdr .badge{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
+.f{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.g2{gap:4px}
+.mt{margin-top:8px}.mb{margin-bottom:8px}
+label{font-size:12px;font-weight:500;color:#6e6e73;white-space:nowrap}
+input,select,textarea{padding:5px 8px;border:1.5px solid #d2d2d7;border-radius:7px;font-size:12px;outline:none;background:#fff;flex:1}
+input:focus,select:focus,textarea:focus{border-color:#0071e3}
+textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
+.btn{padding:5px 12px;border-radius:7px;font-size:11px;font-weight:500;border:none;cursor:pointer;transition:.12s;display:inline-flex;align-items:center;gap:4px}
+.pri{background:#0071e3;color:#fff}.pri:hover{background:#0077ed}
+.sec{background:#e8e8ed;color:#1d1d1f}.sec:hover{background:#ddd}
+.dng{background:#ff375f;color:#fff}.dng:hover{background:#e8324f}
+.scc{background:#34c759;color:#fff}.scc:hover{background:#30b753}
+.xs{padding:2px 8px;font-size:10px;border-radius:5px}
+.btn:disabled{opacity:.5;cursor:not-allowed}.btn:active:not(:disabled){transform:scale(.96)}
+.tg{font-size:10px;padding:1px 5px;border-radius:4px;font-weight:500;flex-shrink:0}
+.tgg{background:#deffde;color:#1a7d1a}.tgb{background:#e8f0fe;color:#0071e3}.tggy{background:#f0f0f2;color:#86868b}.tgr{background:#ffe5e5;color:#b31919}
+.e{color:#b31919;font-size:12px}.o{color:#1a7d1a;font-size:12px}
+.t{font-size:11px;color:#86868b}
+.ovg{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px}
+.ovi{background:#f5f5f7;border-radius:8px;padding:8px 10px;text-align:center}
+.ovi .v{font-size:18px;font-weight:600}.ovi .l{font-size:10px;color:#86868b}
+.ag{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}
+.ac{background:#f5f5f7;border-radius:10px;padding:10px 12px;border:2px solid transparent;transition:.15s}
+.ac .an{font-size:13px;font-weight:600}.ac .acur{font-size:10px;color:#6e6e73;margin:2px 0 6px;word-break:break-all}
+.ac select{width:100%;font-size:11px;padding:4px 6px}
+.ac.ch{border-color:#0071e3;background:#f0f7ff}
+.kr{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;border-bottom:1px solid #f0f0f2}
+.kr:last-child{border-bottom:none}
+.ml{max-height:200px;overflow-y:auto;border:1px solid #e8e8ed;border-radius:7px}
+.mr{display:flex;align-items:center;gap:5px;padding:3px 6px;font-size:11px;border-bottom:1px solid #f0f0f2}
+.mr:hover{background:#f5f5f7}.mr:last-child{border-bottom:none}
+.mr .k{font-family:monospace;color:#6e6e73;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.fv{display:flex;gap:8px;min-height:200px}
+.fl{width:200px;flex-shrink:0;border:1px solid #e8e8ed;border-radius:7px;overflow-y:auto;max-height:350px}
+.fr{flex:1;border:1px solid #e8e8ed;border-radius:7px;padding:6px;overflow-y:auto;max-height:350px}
+.fi{padding:3px 6px;font-size:11px;cursor:pointer;border-bottom:1px solid #f0f0f2;display:flex;justify-content:space-between;align-items:center}
+.fi:hover{background:#e8f0fe}.fi.a{background:#e8f0fe;font-weight:500}
+.lg{background:#1d1d1f;color:#c7c7c7;border-radius:8px;padding:6px 8px;font-family:monospace;font-size:10px;line-height:1.5;max-height:150px;overflow-y:auto}
+.lg .err{color:#ff6b6b}.lg .ok{color:#51cf66}
+.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:100}
+.mc{background:#fff;border-radius:14px;padding:20px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto}
+.mc h3{font-size:15px;margin-bottom:10px}
+.mc .mlabel{display:block;font-size:11px;font-weight:500;margin-top:8px;margin-bottom:3px;color:#6e6e73}
+.mc .ma{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
+.loading{text-align:center;padding:40px;color:#6e6e73;font-size:14px}
+.tbl{width:100%;font-size:11px;border-collapse:collapse}
+.tbl th{text-align:left;padding:4px 6px;background:#f5f5f7;font-weight:600}
+.tbl td{padding:3px 6px}
+.tbl tr:hover td{background:#fafafa}
+.toast{position:fixed;top:16px;right:16px;padding:10px 16px;border-radius:8px;font-size:12px;font-weight:500;z-index:200;animation:fadeIn .2s}
+.toast.ok{background:#deffde;color:#1a7d1a;border:1px solid #b3e6b3}
+.toast.err{background:#ffe5e5;color:#b31919;border:1px solid #ffb3b3}
+@keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
+.pulse{animation:pulse 1.5s infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
+</style>
+</head>
+<body>
+<div id="app" class="c">
+  <!-- Toast -->
+  <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
+
+  <!-- Header -->
+  <div class="f" style="justify-content:space-between">
+    <div>
+      <div class="h1">🐾 Model Switcher</div>
+      <div class="sub">
+        <span v-if="loading" class="pulse">加载中...</span>
+        <template v-else>
+          <span>{{ agents.length }} Agent</span>
+          <span>{{ models.length }} 模型</span>
+          <span>{{ providers.filter(p=>p.key).length }} Key</span>
+          <span v-if="status.port" style="font-family:monospace">:{{ status.port }}</span>
+          <span v-if="status.uptime" class="t">运行 {{ uptimeStr }}</span>
+          <span @click="refresh" style="cursor:pointer;color:#0071e3;margin-left:8px">⟳ 刷新</span>
+        </template>
+      </div>
+    </div>
+    <div v-if="!loading" class="f" style="gap:6px">
+      <span class="tg tgb">v5</span>
+    </div>
+  </div>
+
+  <!-- 概览 -->
+  <div class="card">
+    <div class="hdr">📊 概览</div>
+    <div v-if="loading" class="loading">Loading...</div>
+    <template v-else>
+      <div class="ovg">
+        <div class="ovi"><div class="v">{{ agents.length }}</div><div class="l">Agent</div></div>
+        <div class="ovi"><div class="v">{{ models.length }}</div><div class="l">模型</div></div>
+        <div class="ovi"><div class="v">{{ providers.filter(p=>p.key).length }}</div><div class="l">Key</div></div>
+        <div class="ovi"><div class="v">{{ backups.length }}</div><div class="l">备份</div></div>
+        <div class="ovi"><div class="v">{{ scenes.length }}</div><div class="l">场景</div></div>
+      </div>
+      <div class="mt">
+        <table class="tbl">
+          <tr><th>Agent</th><th>模型</th><th>Workspace</th></tr>
+          <tr v-for="a in agents" :key="a.id">
+            <td><strong>{{ a.id }}</strong></td>
+            <td style="font-family:monospace;font-size:10px">{{ short(a.model) }}</td>
+            <td style="font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</td>
+          </tr>
+        </table>
+      </div>
+      <div class="mt">
+        <table class="tbl">
+          <tr><th>提供商</th><th>Base URL</th><th>Key</th><th>模型数</th></tr>
+          <tr v-for="p in providers" :key="p.id">
+            <td>{{ p.id }}</td>
+            <td style="font-size:10px;color:#6e6e73">{{ p.baseUrl }}</td>
+            <td style="font-family:monospace">{{ p.key || '-' }}</td>
+            <td>{{ p.models.length }}</td>
+          </tr>
+          <tr v-if="!providers.length"><td colspan="4" style="text-align:center;padding:8px;color:#86868b">无提供商 — 去「配Key」添加</td></tr>
+        </table>
+      </div>
+    </template>
+  </div>
+
+  <!-- 模型切换 -->
+  <div class="card">
+    <div class="hdr">🔄 模型切换 <span class="badge tgb">核心功能</span></div>
+    <div v-if="loading" class="loading">Loading...</div>
+    <template v-else>
+      <!-- 批量操作 -->
+      <div class="f mb" style="gap:6px">
+        <label>批量设置：</label>
+        <select v-model="batchModel" style="max-width:300px;font-size:11px">
+          <option value="">选择模型...</option>
+          <optgroup v-for="g in groups" :key="g.n" :label="g.n">
+            <option v-for="m in g.ms" :key="m.k" :value="m.k">{{ m.s }}</option>
+          </optgroup>
+        </select>
+        <button class="btn sec xs" @click="batchApply" :disabled="!batchModel">全部应用</button>
+      </div>
+      <div class="ag">
+        <div v-for="a in agents" :key="a.id" class="ac" :class="{ch:a._ch}">
+          <div class="an">{{ a.id }}</div>
+          <div class="acur">当前：{{ short(a.model) }}</div>
+          <select v-model="a._sel" @change="a._ch=(a._sel!==a.model)">
+            <optgroup v-for="g in groups" :key="g.n" :label="g.n">
+              <option v-for="m in g.ms" :key="m.k" :value="m.k">{{ m.s }}</option>
+            </optgroup>
+          </select>
+        </div>
+      </div>
+      <div class="f mt" style="justify-content:space-between">
+        <div class="f" style="gap:8px">
+          <button class="btn pri" @click="apply" :disabled="!agents.some(a=>a._ch)">
+            ✅ 应用改动 <template v-if="changedCount">({{ changedCount }})</template>
+          </button>
+          <button class="btn sec xs" @click="resetSelection">重置</button>
+        </div>
+        <div v-if="msg" :class="msgOk?'o':'e'" style="font-size:12px">{{ msg }}</div>
+      </div>
+    </template>
+  </div>
+
+  <!-- 配Key -->
+  <div class="card">
+    <div class="hdr">🔑 配Key</div>
+    <div class="f g2">
+      <select v-model="kf.provider" style="max-width:160px">
+        <option value="">选供应商</option>
+        <option v-for="p in catalog" :key="p.id" :value="p.id">{{ p.name }}</option>
+      </select>
+      <input v-model="kf.apiKey" type="password" placeholder="API Key" style="flex:1.2">
+      <input v-model="kf.baseUrl" placeholder="Base URL (可选)" style="flex:1">
+      <button class="btn scc" @click="probe" :disabled="!kf.provider||!kf.apiKey||kl">
+        {{ kl ? '验证中...' : '🔍 验证' }}
+      </button>
+    </div>
+    <div v-if="kr" class="mt" :class="kr.ok?'o':'e'">
+      {{ kr.ok ? '✅ OK — '+kr.count+' 个模型已写入配置' : '❌ FAIL: '+kr.error }}
+    </div>
+  </div>
+
+  <!-- Agent管理 -->
+  <div class="card">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">🤖 Agent管理</div>
+      <button class="btn pri xs" @click="showCreate=true">+ 新建</button>
+    </div>
+    <div class="kr" v-for="a in agents" :key="a.id" style="font-size:12px;padding:6px 0">
+      <span style="font-weight:600;width:80px">{{ a.id }}</span>
+      <span style="flex:1;font-size:10px;color:#6e6e73;font-family:monospace">{{ short(a.model) }}</span>
+      <span style="flex:1;font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</span>
+      <button class="btn xs dng" @click="deleteAgent(a.id)" style="margin-left:auto">删除</button>
+    </div>
+  </div>
+
+  <!-- 文件浏览器 -->
+  <div class="card">
+    <div class="hdr">📁 文件浏览器</div>
+    <div class="f mb">
+      <select v-model="fileAgent" style="max-width:160px" @change="loadFiles">
+        <option value="">选Agent</option>
+        <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.id }}</option>
+      </select>
+      <span class="t">{{ fileList.length }} 文件</span>
+      <input v-model="fileFilter" placeholder="过滤..." style="max-width:160px;font-size:11px" @input="filterFiles">
+    </div>
+    <div v-if="fileAgent" class="fv">
+      <div class="fl">
+        <div v-for="f in filteredFiles" :key="f.path" class="fi" :class="{a:f.path===selectedFile}" @click="loadFileContent(f.path)">
+          <span>{{ f.name }}</span>
+          <span style="font-size:9px;color:#86868b">{{ sz(f.size) }}</span>
+        </div>
+        <div v-if="!fileList.length" style="padding:12px;text-align:center;color:#86868b;font-size:11px">无文件</div>
+      </div>
+      <div class="fr">
+        <div v-if="fileContent!==null" style="height:100%;display:flex;flex-direction:column">
+          <div class="f mb" style="justify-content:space-between">
+            <span class="t">{{ selectedFile }}</span>
+            <div class="f" style="gap:4px">
+              <button class="btn xs sec" @click="fileEditing=!fileEditing">{{ fileEditing?'预览':'编辑' }}</button>
+              <button v-if="fileEditing" class="btn xs scc" @click="saveFile">保存</button>
+            </div>
+          </div>
+          <textarea v-if="fileEditing" v-model="fileContent" style="flex:1;min-height:150px"></textarea>
+          <pre v-else style="flex:1;font-family:monospace;font-size:10px;overflow:auto;white-space:pre-wrap;word-break:break-all;background:#fafafa;padding:6px;border-radius:6px;line-height:1.5">{{ fileContent }}</pre>
+        </div>
+        <div v-else style="text-align:center;padding:40px 0;color:#86868b;font-size:12px">← 选文件查看</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 备份 -->
+  <div class="card">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">💾 备份 <span class="badge tggy">{{ backups.length }}</span></div>
+      <button class="btn xs sec" @click="loadBackups">⟳</button>
+    </div>
+    <div class="kr" v-for="b in backups" :key="b.name">
+      <span style="font-size:10px;color:#86868b;width:150px">{{ b.time }}</span>
+      <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace">{{ b.name }}</span>
+      <span style="font-size:10px;color:#86868b;width:60px;text-align:right">{{ b.size ? sz(b.size) : '' }}</span>
+      <button class="btn xs sec" @click="rollback(b)">回滚</button>
+    </div>
+    <div v-if="!backups.length" style="text-align:center;padding:6px;color:#86868b;font-size:11px">无备份</div>
+  </div>
+
+  <!-- 日志 -->
+  <div class="card">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">📋 日志</div>
+      <button class="btn xs sec" @click="loadLogs">⟳</button>
+    </div>
+    <div class="lg">
+      <template v-for="l in logs" :key="l">
+        <div :class="l.includes('ERROR')||l.includes('ERR')?'err':l.includes('OK')||l.includes('Switch')||l.includes('Create')?'ok':''">{{ l }}</div>
+      </template>
+      <div v-if="!logs.length" style="color:#6e6e73">暂无</div>
+    </div>
+  </div>
+
+  <!-- 场景 -->
+  <div class="card">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">🎬 场景预设</div>
+      <button class="btn pri xs" @click="showSaveScene=true">+ 保存当前</button>
+    </div>
+    <div class="kr" v-for="s in scenes" :key="s.name">
+      <span style="font-weight:500;width:120px;font-size:12px">{{ s.name }}</span>
+      <span style="font-size:10px;color:#86868b;flex:1">{{ s.timestamp }}</span>
+      <button class="btn xs pri" @click="applyScene(s)">加载</button>
+      <button class="btn xs dng" @click="deleteScene(s.name)" style="margin-left:4px">×</button>
+    </div>
+    <div v-if="!scenes.length" style="text-align:center;padding:6px;color:#86868b;font-size:11px">无场景 — 保存当前配置为场景</div>
+  </div>
+
+  <!-- 供应商目录 -->
+  <div class="card">
+    <div class="hdr">🏪 供应商目录</div>
+    <div class="ag" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
+      <div v-for="p in catalog" :key="p.id" style="background:#f5f5f7;border-radius:8px;padding:8px 10px">
+        <div class="f" style="justify-content:space-between;margin-bottom:4px">
+          <span style="font-weight:600;font-size:12px">{{ p.name }}</span>
+          <span v-if="p.hasKey" class="tg tgg">已配Key</span>
+          <span v-else class="tg tggy">未配</span>
+        </div>
+        <div style="font-size:10px;color:#6e6e73;font-family:monospace;margin-bottom:2px">{{ p.baseUrl }}</div>
+        <div style="font-size:10px;color:#86868b">{{ p.modelCount }} 模型</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 飞书 Bot 管理 -->
+  <div class="card">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">🐦 飞书 Bot 管理</div>
+      <div class="f" style="gap:4px">
+        <button class="btn pri xs" @click="openFeishuBotModal()">+ 添加 Bot</button>
+        <button class="btn sec xs" @click="showGuidedBot=true">📱 扫码创建</button>
+        <button class="btn sec xs" @click="loadFeishu">⟳</button>
+      </div>
+    </div>
+    <div v-if="!feishu.accounts||!Object.keys(feishu.accounts).length" style="text-align:center;padding:12px;color:#86868b;font-size:11px">暂无 Bot — 点击「添加 Bot」配置飞书机器人</div>
+    <div v-else>
+      <div v-for="(info,key) in feishu.accounts" :key="key" style="background:#f5f5f7;border-radius:10px;padding:10px 12px;margin-bottom:6px">
+        <div class="f" style="justify-content:space-between;margin-bottom:6px">
+          <div class="f" style="gap:8px">
+            <span style="font-weight:600;font-size:13px">{{ info.name || key }}</span>
+            <span class="tg" :class="info.enabled?'tgg':'tgr'">{{ info.enabled ? '启用' : '禁用' }}</span>
+            <span v-if="diagFor(key)" class="tg" :class="diagFor(key).connected?'tgg':'tgr'" :title="diagFor(key).status">{{ diagFor(key).connected ? '🟢 已连' : '🔴 断连' }}</span>
+          </div>
+          <div class="f" style="gap:4px">
+            <button class="btn xs sec" @click="openFeishuBotModal(key,info)">编辑</button>
+            <button class="btn xs dng" @click="deleteFeishuBot(key)">删除</button>
+          </div>
+        </div>
+        <div style="font-size:11px;color:#6e6e73;display:grid;grid-template-columns:80px 1fr;gap:2px 8px">
+          <span>App ID</span><span style="font-family:monospace">{{ info.appId || '-' }}</span>
+          <span>Secret</span><span style="font-family:monospace">{{ info.hasSecret ? info.appSecret : '未设置' }}</span>
+          <span>路由</span><span>{{ getFeishuBinding(key) || '未绑定' }}</span>
+        </div>
+      </div>
+    </div>
+    <!-- allowFrom 白名单 -->
+    <div class="mt">
+      <div class="f" style="justify-content:space-between;margin-bottom:6px">
+        <span style="font-size:12px;font-weight:600">白名单 (各 Bot 独立)</span>
+        <button class="btn xs sec" @click="showAllowFromModal=true">+ 全局添加</button>
+      </div>
+      <!-- 每个 bot 自己的白名单 -->
+      <div v-for="(info,key) in feishu.accounts" :key="'allow-'+key" style="margin-bottom:6px;padding:6px 8px;background:#f5f5f7;border-radius:6px">
+        <div class="f" style="justify-content:space-between;margin-bottom:4px">
+          <span style="font-size:11px;font-weight:500">{{ info.name||key }}</span>
+          <div class="f" style="gap:4px">
+            <span class="tg" :class="info.allowCount>0?'tgg':'tgr'">{{ info.allowCount }} 用户</span>
+            <button class="btn xs sec" @click="openBotAllowFrom(key,info)" style="padding:1px 6px;font-size:9px">+</button>
+          </div>
+        </div>
+        <div v-if="info.allowFrom.length" style="font-size:10px;font-family:monospace;color:#6e6e73;max-height:60px;overflow-y:auto">
+          <div v-for="id in info.allowFrom" :key="id" class="f" style="padding:1px 0">
+            <span style="flex:1;overflow:hidden;text-overflow:ellipsis">{{ id }}</span>
+            <button class="btn xs dng" @click="removeAllowFrom(id,key)" style="padding:0 4px;font-size:9px">×</button>
+          </div>
+        </div>
+        <div v-else style="font-size:10px;color:#86868b;font-style:italic">该 bot 无独立白名单（使用默认拒绝）</div>
+      </div>
+      <!-- 全局白名单 -->
+      <div v-if="feishu.allowFrom&&feishu.allowFrom.length" style="margin-top:6px">
+        <div style="font-size:11px;font-weight:500;margin-bottom:4px">全局默认白名单 <span class="tg tgb">{{ feishu.allowFrom.length }}</span></div>
+        <div style="font-size:10px;font-family:monospace;color:#6e6e73">
+          <div v-for="id in feishu.allowFrom" :key="'g-'+id" class="f" style="padding:1px 0">
+            <span style="flex:1">{{ id }}</span>
+            <button class="btn xs dng" @click="removeAllowFrom(id)">×</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 飞书 Bot 编辑 -->
+  <div v-if="showFeishuBotModal" class="modal" @click.self="showFeishuBotModal=false">
+    <div class="mc">
+      <h3>{{ feishuBotForm._edit ? '编辑' : '添加' }} 飞书 Bot</h3>
+      <label class="mlabel">Bot Key *</label>
+      <input v-model="feishuBotForm.botKey" :disabled="feishuBotForm._edit" placeholder="例: audio_bot">
+      <label class="mlabel">显示名</label>
+      <input v-model="feishuBotForm.name" placeholder="例: audio">
+      <label class="mlabel">App ID *</label>
+      <input v-model="feishuBotForm.appId" placeholder="cli_xxxxxx">
+      <label class="mlabel">App Secret {{ feishuBotForm._edit ? '(留空不修改)' : '*' }}</label>
+      <input v-model="feishuBotForm.appSecret" type="password" placeholder="完整 Secret">
+      <label class="mlabel">绑定 Agent</label>
+      <select v-model="feishuBotForm.agentId">
+        <option value="">不绑定</option>
+        <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.id }}</option>
+      </select>
+      <div class="f mt">
+        <label><input type="checkbox" v-model="feishuBotForm.enabled"> 启用</label>
+      </div>
+      <div class="ma">
+        <button class="btn sec" @click="showFeishuBotModal=false">取消</button>
+        <button class="btn pri" @click="saveFeishuBot" :disabled="!feishuBotForm.botKey||!feishuBotForm.appId">保存</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 扫码创建 Bot -->
+  <div v-if="showGuidedBot" class="modal" @click.self="showGuidedBot=false">
+    <div class="mc" style="width:540px">
+      <h3>📱 扫码创建飞书 Bot</h3>
+      <div class="t mb" style="font-size:11px;line-height:1.6">走 openclaw 内置 OAuth 授权，全程 <strong>30 秒</strong>，无需手动添权限。</div>
+
+      <!-- 未开始 / 扫码中 -->
+      <div v-if="reg.status==='idle'||reg.status==='starting'||reg.status==='pending'||reg.status==='access_denied'" style="background:#f5f5f7;border-radius:8px;padding:14px;margin-bottom:8px;text-align:center">
+        <div v-if="reg.status==='idle'||reg.status==='starting'">
+          <div style="font-size:12px;color:#6e6e73;margin-bottom:8px">点击下面按钮启动扫码</div>
+          <div class="mb" style="text-align:left">
+            <label style="font-size:10px;margin-right:6px">域名：</label>
+            <select v-model="regDomain" style="width:auto;display:inline-block;font-size:11px;flex:0">
+              <option value="feishu">Feishu (飞书 .cn)</option>
+              <option value="lark">Lark (.larksuite.com)</option>
+            </select>
+          </div>
+          <button class="btn pri" @click="startFeishuReg" :disabled="reg.status==='starting'">
+            {{ reg.status==='starting'?'启动中...':'🚀 开始扫码' }}
+          </button>
+        </div>
+        <div v-else-if="reg.status==='pending'">
+          <div style="font-size:12px;margin-bottom:8px">用 <strong>飞书 App</strong> 扫这个二维码授权</div>
+          <div style="display:inline-block;padding:6px;background:#fff;border-radius:6px;margin-bottom:8px">
+            <img :src="regQrUrl" alt="QR" style="display:block;width:160px;height:160px;border-radius:4px">
+          </div>
+          <div style="font-size:11px;color:#6e6e73;font-family:monospace">user_code: {{ reg.userCode }}</div>
+          <div style="font-size:10px;color:#86868b;margin-top:4px">{{ regMsg }} · 剩 {{ reg.remainSec }} 秒</div>
+        </div>
+        <div v-else-if="reg.status==='access_denied'" style="color:#b31919;font-size:12px">
+          ❌ 你拒绝了授权。重新试试。
+        </div>
+      </div>
+
+      <!-- 扫码成功 -->
+      <div v-if="reg.status==='done'" style="background:#deffde;border-radius:8px;padding:14px;margin-bottom:8px">
+        <div style="font-size:13px;font-weight:600;color:#1a7d1a;margin-bottom:8px">✅ 授权成功！凭证已拿到</div>
+        <div style="font-size:11px;color:#6e6e73;display:grid;grid-template-columns:80px 1fr;gap:3px 8px">
+          <span>App ID</span><span style="font-family:monospace;word-break:break-all">{{ reg.result.appId }}</span>
+          <span>Secret</span><span style="font-family:monospace">{{ reg.result.appSecret.slice(0,8) }}●●●●●●●</span>
+          <span>Owner</span><span style="font-family:monospace">{{ reg.result.openId }}</span>
+          <span>Domain</span><span>{{ reg.result.domain }}</span>
+        </div>
+      </div>
+
+      <!-- 选择保存选项 -->
+      <div v-if="reg.status==='done'" style="background:#f5f5f7;border-radius:8px;padding:10px;margin-bottom:8px">
+        <label class="mlabel">账号 ID (botKey)</label>
+        <input v-model="regBotKey" placeholder="默认从 appId 自动生成">
+        <label class="mlabel">绑定 Agent</label>
+        <select v-model="guidedBot.agentId">
+          <option value="">不绑定（手动绑定）</option>
+          <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.id }}</option>
+        </select>
+        <div class="t mt">Owner open_id 会自动加到全局白名单 + 该 bot 白名单</div>
+      </div>
+
+      <div class="ma">
+        <button class="btn sec" @click="closeGuidedBot">关闭</button>
+        <button v-if="reg.status==='done'" class="btn pri" @click="saveRegBot">💾 保存并上线</button>
+        <button v-else-if="reg.status==='idle'" class="btn pri" @click="startFeishuReg">🚀 开始扫码</button>
+      </div>
+    </div>
+  </div>
+
+<!-- Modal: 添加白名单 -->
+  <div v-if="showAllowFromModal" class="modal" @click.self="showAllowFromModal=false">
+    <div class="mc">
+      <h3>添加白名单 open_id</h3>
+      <label class="mlabel">open_id</label>
+      <input v-model="allowFromId" placeholder="ou_xxxxxxx">
+      <label class="mlabel">作用范围</label>
+      <select v-model="allowFromScope">
+        <option value="">全局默认白名单</option>
+        <option v-for="(info,key) in feishu.accounts" :key="key" :value="key">仅 {{ info.name||key }}</option>
+      </select>
+      <div class="t mt">用户发消息给 bot 时，log 里会出现 blocked unauthorized sender: ou_xxx</div>
+      <div class="ma">
+        <button class="btn sec" @click="showAllowFromModal=false">取消</button>
+        <button class="btn pri" @click="addAllowFrom" :disabled="!allowFromId">添加</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 新建Agent -->
+  <div v-if="showCreate" class="modal" @click.self="showCreate=false">
+    <div class="mc">
+      <h3>🤖 新建 Agent</h3>
+      <label class="mlabel">Agent ID *</label>
+      <input v-model="newAgent.id" placeholder="mybot (英文字母开头)">
+      <label class="mlabel">模板</label>
+      <select v-model="newAgent.tpl">
+        <option value="comfyui">comfyui (画图)</option>
+        <option value="toutiao">toutiao (头条)</option>
+        <option value="novel">novel (小说)</option>
+        <option value="manju">manju (漫剧)</option>
+      </select>
+      <label class="mlabel">飞书 App ID (可选)</label>
+      <input v-model="newAgent.appId" placeholder="cli_xxx">
+      <label class="mlabel">飞书 App Secret (可选)</label>
+      <input v-model="newAgent.appSecret" type="password" placeholder="完整 Secret">
+      <div class="ma">
+        <button class="btn sec" @click="showCreate=false">取消</button>
+        <button class="btn pri" @click="createAgent" :disabled="!newAgent.id">创建</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 保存场景 -->
+  <div v-if="showSaveScene" class="modal" @click.self="showSaveScene=false">
+    <div class="mc">
+      <h3>🎬 保存场景</h3>
+      <label class="mlabel">场景名</label>
+      <input v-model="sceneName" placeholder="例：日常开发 / 高性能模式">
+      <div class="t mt">将保存当前所有 Agent 的模型配置</div>
+      <div class="ma">
+        <button class="btn sec" @click="showSaveScene=false">取消</button>
+        <button class="btn pri" @click="saveScene" :disabled="!sceneName">保存</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+const { createApp, ref, computed, onMounted, watch, nextTick } = Vue;
+
+createApp({
+  setup() {
+    // State
+    const agents = ref([]); const models = ref([]); const providers = ref([]);
+    const catalog = ref([]); const backups = ref([]); const logs = ref([]); const scenes = ref([]);
+    const status = ref({}); const loading = ref(true);
+    const msg = ref(''); const msgOk = ref(true); const toast = ref({show:false,msg:'',type:'ok'});
+    const kf = ref({provider:'',apiKey:'',baseUrl:''}); const kr = ref(null); const kl = ref(false);
+    const showCreate = ref(false); const showSaveScene = ref(false);
+    const newAgent = ref({id:'',tpl:'comfyui',appId:'',appSecret:''}); const sceneName = ref('');
+    const fileAgent = ref(''); const fileList = ref([]); const filteredFiles = ref([]);
+    const selectedFile = ref(''); const fileContent = ref(null); const fileEditing = ref(false);
+    const fileFilter = ref(''); const batchModel = ref('');
+    // Feishu
+    const feishu = ref({accounts:{},allowFrom:[],bindings:[],enabled:true});
+    const feishuDiag = ref({}); // 实时诊断状态
+    const showFeishuBotModal = ref(false);
+    const feishuBotForm = ref({botKey:'',name:'',appId:'',appSecret:'',agentId:'',enabled:true,_edit:false});
+    const showAllowFromModal = ref(false);
+    const allowFromId = ref('');
+    const allowFromScope = ref(''); // ''=全局 或 botKey
+    // 扫码创建
+    const showGuidedBot = ref(false);
+    const guidedBot = ref({botKey:'',appId:'',appSecret:'',agentId:''});
+    // openclaw 内置扫码注册
+    const reg = ref({status:'idle',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null});
+    const regQrUrl = computed(()=>reg.value.sessionId?`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent('https://accounts.feishu.cn/oauth/v1/app/registration?session='+reg.value.sessionId)}`:'');
+    const regMsg = ref('');
+    const regBotKey = ref('');
+    let regPollTimer=null;
+
+    // Helpers
+    function short(k){if(!k)return'default';const p=k.split('/');return p.length>1?p.slice(1).join('/'):k}
+    function ws(w){if(!w)return'';const p=w.split('\\');return p.length>1?p[p.length-1]:w}
+    function sz(s){if(!s)return'0B';if(s>1048576)return(s/1048576).toFixed(1)+'MB';if(s>1024)return(s/1024).toFixed(0)+'KB';return s+'B'}
+
+    const uptimeStr = computed(()=>{
+      const s=Math.floor(status.value.uptime||0);
+      if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h'+Math.floor((s%3600)/60)+'m';
+    });
+
+    const changedCount = computed(()=>agents.value.filter(a=>a._ch).length);
+
+    const groups = computed(()=>{
+      const map={};
+      // 从 catalog 获取供应商名
+      catalog.value.forEach(c=>{if(!map[c.id])map[c.id]={n:c.name||c.id,ms:[]}});
+      models.value.forEach(m=>{
+        const p=m.key.split('/')[0]; const s=m.key.split('/').slice(1).join('/');
+        if(!map[p])map[p]={n:p,ms:[]};
+        if(!map[p].ms.some(x=>x.k===m.key))map[p].ms.push({k:m.key,s,av:m.available||m.hasKey});
+      });
+      // 有 key 的排前面
+      const keyed=catalog.value.filter(c=>c.hasKey).map(c=>c.id);
+      const r=keyed.map(k=>map[k]).filter(Boolean);
+      Object.keys(map).filter(k=>!keyed.includes(k)).forEach(k=>{if(map[k].ms.length)r.push(map[k])});
+      return r;
+    });
+
+    // Toast
+    function showToast(msg,type='ok',duration=3000){
+      toast.value={show:true,msg,type};
+      setTimeout(()=>toast.value.show=false,duration);
+    }
+
+    // API calls
+    async function api(path,opts){
+      const r=await fetch(path,opts);
+      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+      return r.json();
+    }
+
+    async function loadAgents(){agents.value=await api('/api/agents');agents.value.forEach(a=>{a._sel=a.model;a._ch=false})}
+    async function loadModels(){models.value=await api('/api/models')}
+    async function loadProviders(){providers.value=await api('/api/providers')}
+    async function loadCatalog(){catalog.value=await api('/api/providers/catalog')}
+    async function loadBackups(){backups.value=await api('/api/backups')}
+    async function loadLogs(){const d=await api('/api/log');logs.value=d.lines}
+    async function loadScenes(){scenes.value=await api('/api/scenes')}
+    async function loadStatus(){status.value=await api('/api/status')}
+
+    async function refresh(){
+      loading.value=true;
+      try{
+        await Promise.all([loadAgents(),loadModels(),loadProviders(),loadCatalog(),loadBackups(),loadLogs(),loadScenes(),loadStatus(),loadFeishu(),loadFeishuDiag()]);
+      }catch(e){showToast('加载失败: '+e.message,'err')}
+      loading.value=false;
+    }
+
+    async function apply(){
+      const ch={};let n=0;
+      agents.value.forEach(a=>{if(a._ch){ch[a.id]=a._sel;n++}});
+      if(!n)return;
+      try{
+        const d=await api('/api/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({changes:ch})});
+        agents.value.forEach(a=>{if(ch[a.id]){a.model=ch[a.id];a._ch=false}});
+        showToast(`✅ ${n} 个 Agent 已切换`);
+        await loadStatus();
+      }catch(e){showToast('切换失败: '+e.message,'err')}
+    }
+
+    function batchApply(){
+      if(!batchModel.value)return;
+      agents.value.forEach(a=>{a._sel=batchModel.value;a._ch=true});
+    }
+
+    function resetSelection(){agents.value.forEach(a=>{a._sel=a.model;a._ch=false})}
+
+    async function probe(){
+      kl.value=true;kr.value=null;
+      try{
+        const d=await api('/api/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:kf.value.provider,apiKey:kf.value.apiKey,baseUrl:kf.value.baseUrl||''})});
+        kr.value={ok:d.ok,count:d.count,error:d.error};
+        if(d.ok)showToast(`✅ ${d.count} 个模型已写入`);
+        await Promise.all([loadAgents(),loadProviders(),loadCatalog(),loadModels()]);
+      }catch(e){kr.value={ok:false,error:e.message}}
+      kl.value=false;
+    }
+
+    async function createAgent(){
+      try{
+        const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...newAgent.value,workspaceTemplate:newAgent.value.tpl})});
+        if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent 创建成功')}
+        else{showToast('创建失败: '+(d.error||'unknown'),'err')}
+      }catch(e){showToast('创建失败: '+e.message,'err')}
+    }
+
+    async function deleteAgent(id){
+      if(!confirm(`确定删除 Agent "${id}"？\n\n这会删除 workspace 和配置。`))return;
+      try{
+        await api('/api/agent/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+        await refresh();showToast('✅ 已删除 '+id);
+      }catch(e){showToast('删除失败: '+e.message,'err')}
+    }
+
+    // Files
+    async function loadFiles(){
+      if(!fileAgent.value){fileList.value=[];filteredFiles.value=[];return}
+      fileList.value=await api('/api/agent/'+fileAgent.value+'/files');
+      filteredFiles.value=fileList.value;
+      selectedFile.value='';fileContent.value=null;fileFilter.value='';
+    }
+    function filterFiles(){
+      const q=fileFilter.value.toLowerCase();
+      filteredFiles.value=q?fileList.value.filter(f=>f.name.toLowerCase().includes(q)||f.path.toLowerCase().includes(q)):fileList.value;
+    }
+    async function loadFileContent(p){
+      selectedFile.value=p;fileEditing.value=false;
+      const d=await api('/api/agent/'+fileAgent.value+'/file?path='+encodeURIComponent(p));
+      fileContent.value=d.content||d.error||'';
+    }
+    async function saveFile(){
+      try{
+        await api('/api/agent/'+fileAgent.value+'/file/write',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:selectedFile.value,content:fileContent.value})});
+        fileEditing.value=false;showToast('✅ 已保存');
+      }catch(e){showToast('保存失败: '+e.message,'err')}
+    }
+
+    // Backups
+    async function rollback(b){
+      if(!confirm(`回滚到 ${b.name}？`))return;
+      try{
+        await api('/api/rollback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:b.path})});
+        await refresh();showToast('✅ 回滚成功');
+      }catch(e){showToast('回滚失败: '+e.message,'err')}
+    }
+
+    // Scenes
+    async function saveScene(){
+      const cfg={};agents.value.forEach(a=>{cfg[a.id]=a.model});
+      try{
+        await api('/api/scenes/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:sceneName.value,config:cfg})});
+        showSaveScene.value=false;sceneName.value='';await loadScenes();showToast('✅ 场景已保存');
+      }catch(e){showToast('保存失败: '+e.message,'err')}
+    }
+    async function applyScene(s){
+      try{
+        await api('/api/scenes/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:s.name})});
+        await refresh();showToast('✅ 场景 '+s.name+' 已加载');
+      }catch(e){showToast('加载失败: '+e.message,'err')}
+    }
+    async function deleteScene(name){
+      if(!confirm(`删除场景 "${name}"？`))return;
+      try{
+        await api('/api/scenes/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
+        await loadScenes();showToast('✅ 已删除');
+      }catch(e){showToast('删除失败: '+e.message,'err')}
+    }
+
+    // Feishu
+    async function loadFeishu(){try{feishu.value=await api('/api/feishu')}catch(e){}}
+    async function loadFeishuDiag(){try{const d=await api('/api/feishu/diagnostics');feishuDiag.value=d.diagnostics||{}}catch(e){}}
+    function diagFor(key){return feishuDiag.value[key]}
+    function getFeishuBinding(botKey){
+      const b=feishu.value.bindings?.find(x=>x.match?.accountId===botKey);
+      return b?`→ ${b.agentId}`:'';
+    }
+    function openFeishuBotModal(key,info){
+      if(key&&info){
+        feishuBotForm.value={botKey:key,name:info.name||'',appId:info.appId||'',appSecret:'',agentId:getFeishuBinding(key).replace('→ ',''),enabled:info.enabled!==false,_edit:true};
+      }else{
+        feishuBotForm.value={botKey:'',name:'',appId:'',appSecret:'',agentId:'',enabled:true,_edit:false};
+      }
+      showFeishuBotModal.value=true;
+    }
+    async function saveFeishuBot(){
+      const f=feishuBotForm.value;
+      try{
+        await api('/api/feishu/bot/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botKey:f.botKey,appId:f.appId,appSecret:f.appSecret||undefined,name:f.name,enabled:f.enabled})});
+        if(f.agentId){
+          await api('/api/feishu/binding/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botKey:f.botKey,agentId:f.agentId})});
+        }
+        showFeishuBotModal.value=false;
+        await loadFeishu();
+        showToast('✅ Bot 已保存');
+      }catch(e){showToast('保存失败: '+e.message,'err')}
+    }
+    async function deleteFeishuBot(key){
+      if(!confirm(`删除 Bot "${key}"？`))return;
+      try{
+        await api('/api/feishu/bot/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({botKey:key})});
+        await loadFeishu();showToast('✅ 已删除');
+      }catch(e){showToast('删除失败: '+e.message,'err')}
+    }
+    async function addAllowFrom(){
+      try{
+        const body={openId:allowFromId.value};
+        if(allowFromScope.value) body.botKey=allowFromScope.value;
+        await api('/api/feishu/allowfrom/add',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        showAllowFromModal.value=false;allowFromId.value='';allowFromScope.value='';
+        await loadFeishu();showToast('✅ 已添加');
+      }catch(e){showToast('添加失败: '+e.message,'err')}
+    }
+    function openBotAllowFrom(botKey){
+      allowFromScope.value=botKey;
+      allowFromId.value='';
+      showAllowFromModal.value=true;
+    }
+    async function removeAllowFrom(id,botKey){
+      try{
+        const body={openId:id};
+        if(botKey) body.botKey=botKey;
+        await api('/api/feishu/allowfrom/remove',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        await loadFeishu();showToast('✅ 已移除');
+      }catch(e){showToast('移除失败: '+e.message,'err')}
+    }
+
+    // 扫码引导创建
+    async function startFeishuReg(){
+      reg.value={status:'starting',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null};
+      regMsg.value='请求飞书 OAuth 授权接口...';
+      try{
+        const d=await api('/api/feishu/register/begin',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        if(!d.ok) throw new Error(d.error||'启动失败');
+        reg.value.sessionId=d.sessionId;
+        reg.value.userCode=d.userCode;
+        reg.value.interval=d.interval||5;
+        reg.value.expireIn=d.expireIn||600;
+        reg.value.remainSec=d.expireIn||600;
+        reg.value.status='pending';
+        regMsg.value='等待扫码...';
+        regBotKey.value=d.sessionId.slice(0,8)+'_bot';
+        // 轮询
+        if(regPollTimer) clearInterval(regPollTimer);
+        regPollTimer=setInterval(pollReg,Math.max(2,d.interval||5)*1000);
+      }catch(e){regMsg.value='错误: '+e.message;reg.value.status='idle'}
+    }
+    async function pollReg(){
+      try{
+        const d=await api('/api/feishu/register/poll',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:reg.value.sessionId})});
+        reg.value.remainSec=Math.max(0,reg.value.remainSec-reg.value.interval);
+        if(d.status==='done'){
+          reg.value.status='done';
+          reg.value.result=d.result;
+          if(regPollTimer){clearInterval(regPollTimer);regPollTimer=null}
+          regMsg.value='授权成功！';
+        }else if(d.status==='access_denied'||d.status==='expired'){
+          reg.value.status='access_denied';
+          if(regPollTimer){clearInterval(regPollTimer);regPollTimer=null}
+        }
+      }catch(e){regMsg.value='轮询出错: '+e.message}
+    }
+    async function saveRegBot(){
+      try{
+        const d=await api('/api/feishu/register/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:reg.value.sessionId,botKey:regBotKey.value,agentId:guidedBot.value.agentId})});
+        if(d.ok){
+          showGuidedBot.value=false;
+          guidedBot.value={botKey:'',appId:'',appSecret:'',agentId:''};
+          reg.value={status:'idle',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null};
+          await loadFeishu();await refresh();
+          showToast('✅ Bot '+d.accountId+' 已上线！飞书热重载 30s 后生效');
+        }else{showToast('保存失败: '+(d.error||''),'err')}
+      }catch(e){showToast('保存失败: '+e.message,'err')}
+    }
+    function closeGuidedBot(){
+      showGuidedBot.value=false;
+      if(regPollTimer){clearInterval(regPollTimer);regPollTimer=null}
+      reg.value={status:'idle',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null};
+    }
+
+    // 引导创建旧函数已移除（走 openclaw 内置 OAuth）
+
+    // Auto-fill baseUrl when provider changes
+    const watchProvider = setInterval(()=>{
+      if(kf.value.provider&&kf.value._lp!==kf.value.provider){
+        const p=catalog.value.find(x=>x.id===kf.value.provider);
+        if(p)kf.value.baseUrl=p.baseUrl;
+        kf.value._lp=kf.value.provider;
+      }
+    },300);
+
+    onMounted(refresh);
+
+    return{
+      agents,models,providers,catalog,backups,logs,scenes,status,loading,
+      msg,msgOk,toast,kf,kr,kl,showCreate,showSaveScene,newAgent,sceneName,
+      fileAgent,fileList,filteredFiles,selectedFile,fileContent,fileEditing,fileFilter,
+      batchModel,uptimeStr,changedCount,groups,short,ws,sz,
+      feishu,showFeishuBotModal,feishuBotForm,showAllowFromModal,allowFromId,allowFromScope,feishuDiag,diagFor,
+      showGuidedBot,guidedBot,reg,regQrUrl,regMsg,regBotKey,
+      refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
+      loadFiles,filterFiles,loadFileContent,saveFile,
+      loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,
+      loadFeishu,getFeishuBinding,openFeishuBotModal,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
+      startFeishuReg,pollReg,saveRegBot,closeGuidedBot
+    };
+  }
+}).mount('#app');
+</script>
+</body>
+</html>

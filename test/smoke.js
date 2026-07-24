@@ -1,0 +1,197 @@
+#!/usr/bin/env node
+/**
+ * Smoke test: spin up an isolated switcher instance with a fake openclaw config,
+ * hit every endpoint category, then tear down.
+ *
+ * Exits 0 on success, 1 on any failure.
+ *
+ * Usage:
+ *   node test/smoke.js
+ *
+ * No external deps. Requires Node 18+.
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { spawn, execSync } = require('child_process');
+const http = require('http');
+
+const TESTS = [];
+function test(name, fn) { TESTS.push({ name, fn }); }
+
+const SWITCHER_DIR = path.join(__dirname, '..');
+const SWITCHER_CJS = path.join(SWITCHER_DIR, 'switcher.cjs');
+const TMP_ROOT = fs.mkdtempSync(path.join(os.tmpdir(), 'switcher-smoke-'));
+const FAKE_HOME = path.join(TMP_ROOT, '.openclaw');
+const FAKE_WS   = path.join(TMP_ROOT, 'workspace');
+const TEST_PORT = 2399;
+
+function buildFakeConfig() {
+    fs.mkdirSync(FAKE_HOME, { recursive: true });
+    fs.mkdirSync(FAKE_WS, { recursive: true });
+    const cfg = {
+        agents: {
+            defaults: { model: { primary: 'minimax/MiniMax-M3' } },
+            list: [
+                { id: 'agent1', name: 'agent1', model: { primary: 'minimax/MiniMax-M3' } },
+                { id: 'agent2', name: 'agent2', model: { primary: 'openai/gpt-oss-20b' } },
+            ],
+        },
+        models: {
+            mode: 'merge',
+            providers: {
+                minimax: { baseUrl: 'https://api.minimax.chat/v1', apiKey: '***', api: 'openai-completions', authHeader: true, models: [{ id: 'MiniMax-M3', name: 'MiniMax-M3', input: ['text'], contextWindow: 128000, maxTokens: 8192 }] },
+                openai:  { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-***', api: 'openai-completions', authHeader: true, models: [{ id: 'gpt-oss-20b', name: 'gpt-oss-20b', input: ['text'], contextWindow: 128000, maxTokens: 8192 }] },
+            },
+        },
+        channels: { feishu: { enabled: true, accounts: {} } },
+        bindings: [],
+    };
+    fs.writeFileSync(path.join(FAKE_HOME, 'openclaw.json'),
+                      JSON.stringify(cfg, null, 2),
+                      'utf8');
+}
+
+function http_get(url) {
+    return new Promise((resolve, reject) => {
+        http.get(url, (res) => {
+            let body = '';
+            res.on('data', c => body += c);
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+        }).on('error', reject);
+    });
+}
+
+function startInstance() {
+    buildFakeConfig();
+    const env = Object.assign({}, process.env, {
+        OPENCLAW_HOME: FAKE_HOME,
+        OPENCLAW_WS:   FAKE_WS,
+        OPENCLAW_AGENTS: path.join(FAKE_HOME, 'agents'),
+        SWITCHER_PORT: String(TEST_PORT),
+        SWITCHER_LOG: path.join(TMP_ROOT, 'switcher.log'),
+        SWITCHER_BACKUP_DIR: path.join(TMP_ROOT, 'backups'),
+        SWITCHER_SCENES: path.join(TMP_ROOT, 'scenes.json'),
+    });
+    const p = spawn(process.execPath, [SWITCHER_CJS], {
+        cwd: SWITCHER_DIR,
+        env,
+        stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return p;
+}
+
+async function waitReady(maxMs = 8000) {
+    const start = Date.now();
+    while (Date.now() - start < maxMs) {
+        try {
+            const r = await http_get(`http://localhost:${TEST_PORT}/api/status`);
+            if (r.status === 200) return r;
+        } catch {}
+        await new Promise(r => setTimeout(r, 200));
+    }
+    return null;
+}
+
+async function withInstance(fn) {
+    const proc = startInstance();
+    let exitCode = 1;
+    try {
+        const ready = await waitReady();
+        if (!ready) throw new Error('instance did not become ready in 8s');
+        await fn();
+        exitCode = 0;
+    } finally {
+        try { proc.kill('SIGTERM'); } catch {}
+        await new Promise(r => setTimeout(r, 500));
+        try { proc.kill('SIGKILL'); } catch {}
+    }
+    return exitCode;
+}
+
+// -------- TESTS --------
+
+test('instance boots via portable env vars', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/status`);
+    if (r.status !== 200) throw new Error(`/api/status HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.port !== TEST_PORT) throw new Error(`expected port ${TEST_PORT}, got ${j.port}`);
+    if (!String(j.configPath).endsWith('openclaw.json')) throw new Error(`configPath wrong: ${j.configPath}`);
+    if (j.agents !== 2) throw new Error(`expected 2 agents, got ${j.agents}`);
+}));
+
+test('agents endpoint returns fake agents', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/agents`);
+    if (r.status !== 200) throw new Error(`/api/agents HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (!Array.isArray(j)) throw new Error('not an array');
+    const ids = j.map(a => a.id);
+    if (!ids.includes('agent1') || !ids.includes('agent2')) throw new Error(`missing agents: ${ids.join(',')}`);
+}));
+
+test('providers endpoint returns fake providers', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/providers`);
+    if (r.status !== 200) throw new Error(`/api/providers HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    const ids = j.map(p => p.id);
+    if (!ids.includes('minimax') || !ids.includes('openai')) throw new Error(`missing providers: ${ids.join(',')}`);
+}));
+
+test('models endpoint gracefully returns error without CLI', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/models`);
+    // With no CLI available, expect either 503 (configured CLI but unreachable)
+    // or 200 with empty/error JSON. Either is acceptable graceful behavior.
+    if (r.status !== 200 && r.status !== 503) throw new Error(`/api/models HTTP ${r.status} not graceful`);
+}));
+
+test('backup dir is isolated per env var', () => withInstance(async () => {
+    // Trigger a backup by switching an agent's model -- write() creates BACKUP_DIR on first call
+    const r = await new Promise((resolve, reject) => {
+        const req = http.request({
+            method: 'POST',
+            hostname: 'localhost',
+            port: TEST_PORT,
+            path: '/api/switch',
+            headers: { 'Content-Type': 'application/json' },
+        }, (res) => {
+            let body = '';
+            res.on('data', c => body += c);
+            res.on('end', () => resolve({ status: res.statusCode, body }));
+        });
+        req.on('error', reject);
+        req.write(JSON.stringify({ changes: { agent1: 'openai/gpt-oss-20b' } }));
+        req.end();
+    });
+    if (r.status !== 200) throw new Error(`/api/switch HTTP ${r.status}`);
+    // Now BACKUP_DIR should exist AND contain a backup file
+    const expectedDir = process.env.SWITCHER_BACKUP_DIR || path.join(TMP_ROOT, 'backups');
+    if (!fs.existsSync(expectedDir)) throw new Error(`backup dir not created: ${expectedDir}`);
+    const backups = fs.readdirSync(expectedDir).filter(f => f.endsWith('.json'));
+    if (backups.length === 0) throw new Error(`no backup files in ${expectedDir}`);
+}));
+
+test('static frontend serves index.html', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/`);
+    if (r.status !== 200) throw new Error(`/ HTTP ${r.status}`);
+    if (!r.body.includes('<html')) throw new Error('not HTML');
+}));
+
+// -------- RUN --------
+
+(async () => {
+    let passed = 0, failed = 0;
+    for (const t of TESTS) {
+        try {
+            const code = await t.fn();
+            if (code === 0) { console.log(`  PASS  ${t.name}`); passed++; }
+            else            { console.log(`  FAIL  ${t.name} (exit ${code})`); failed++; }
+        } catch (e) {
+            console.log(`  FAIL  ${t.name}: ${e.message || e}`);
+            failed++;
+        }
+    }
+    try { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); } catch {}
+    console.log(`\n  Result: ${passed} passed, ${failed} failed`);
+    process.exit(failed === 0 ? 0 : 1);
+})();
