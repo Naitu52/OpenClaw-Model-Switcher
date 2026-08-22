@@ -119,7 +119,14 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
           </tr>
         </table>
       </div>
-      <div class="mt">
+      <div class="mt f" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:11px;color:#6e6e73">已配置 ({{ providers.length }})</span>
+        <button class="btn xs" @click="refreshAllProviders" :disabled="refreshingAll || !providers.length" title="对每个已配 provider 调 /v1/models，覆盖本地列表 + 清理孤儿">
+          <span v-if="refreshingAll">⏳ 刷新中…</span>
+          <span v-else>🔄 全部刷新</span>
+        </button>
+      </div>
+      <div>
         <table class="tbl">
           <tr><th>提供商</th><th>Base URL</th><th>Key</th><th>模型数</th><th>操作</th></tr>
           <tr v-for="p in providers" :key="p.id">
@@ -563,6 +570,7 @@ createApp({
     const showProviderEdit = ref(false);
     const providerEdit = ref({id:'', baseUrl:'', apiKey:'', api:'', authHeader:true});
     const providerEditError = ref(''); const providerEditSaving = ref(false);
+    const refreshingAll = ref(false);
     const fileAgent = ref(''); const fileList = ref([]); const filteredFiles = ref([]);
     const selectedFile = ref(''); const fileContent = ref(null); const fileEditing = ref(false);
     const fileFilter = ref(''); const batchModel = ref('');
@@ -740,6 +748,24 @@ createApp({
           showToast('删除失败: '+(d.error||'unknown'),'err');
         }
       }catch(e){ showToast('删除失败: '+e.message,'err'); }
+    }
+    async function refreshAllProviders(){
+      if (refreshingAll.value) return;
+      if (!providers.value.length) { showToast('没有已配置的提供商','warn'); return; }
+      refreshingAll.value = true;
+      showToast(`🔄 开始刷新 ${providers.value.length} 个提供商…`, 'ok');
+      try{
+        const d = await api('/api/providers/refresh-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        const lines = (d.results||[]).map(r => {
+          if (r.skipped) return `${r.provider} ⏭无key`;
+          return r.ok ? `${r.provider} ✓${r.count} (${r.elapsedMs}ms)` : `${r.provider} ✗${r.error}`;
+        });
+        const tail = lines.length > 4 ? `…${lines.length-4} more` : '';
+        const summary = `${d.succeeded}/${d.total}${d.failed?` 失败${d.failed}`:''}：${lines.slice(0,4).join('、')}${tail}`;
+        showToast(d.failed ? `⚠️ ${summary}` : `✅ ${summary}`, d.failed ? 'warn' : 'ok');
+        await refresh();
+      }catch(e){ showToast('刷新失败: '+e.message,'err'); }
+      finally { refreshingAll.value = false; }
     }
 
     // Files
@@ -927,8 +953,8 @@ createApp({
       batchModel,uptimeStr,changedCount,groups,short,ws,sz,
       feishu,showFeishuBotModal,feishuBotForm,showAllowFromModal,allowFromId,allowFromScope,feishuDiag,diagFor,
       showGuidedBot,guidedBot,reg,regQrUrl,regMsg,regBotKey,
-      showProviderEdit,providerEdit,providerEditError,providerEditSaving,
-      editProvider,saveProviderEdit,deleteProvider,
+      showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,
+      editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
       loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,

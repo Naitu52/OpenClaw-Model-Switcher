@@ -295,6 +295,28 @@ test('POST /api/providers/delete on free provider succeeds without force', () =>
     if (j.liveDeps.length !== 0) throw new Error('liveDeps should be empty for unused provider');
 }));
 
+test('POST /api/providers/refresh-all returns structured result per provider', () => withInstance(async () => {
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/refresh-all`, {});
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (typeof j.ok !== 'boolean') throw new Error('missing ok');
+    if (typeof j.total !== 'number') throw new Error('missing total');
+    if (typeof j.succeeded !== 'number') throw new Error('missing succeeded');
+    if (typeof j.failed !== 'number') throw new Error('missing failed');
+    if (!Array.isArray(j.results)) throw new Error('missing results array');
+    // Fake config has 3 providers with apiKey (minimax, openai, xiaomi)
+    if (j.results.length !== 3) throw new Error(`expected 3 results, got ${j.results.length}`);
+    for (const r of j.results) {
+        if (!r.provider) throw new Error('result missing provider name');
+        if (typeof r.ok !== 'boolean') throw new Error(`result ${r.provider} missing ok`);
+    }
+    // Fake keys (***, sk-***, xk-***) cannot authenticate, so all should fail.
+    // succeeded should be 0; failed should be 3. This confirms the structure is
+    // correct without depending on real network.
+    if (j.succeeded !== 0) throw new Error(`expected 0 succeeded (fake keys), got ${j.succeeded}`);
+    if (j.failed !== 3) throw new Error(`expected 3 failed, got ${j.failed}`);
+}));
+
 // -------- RUN --------
 
 (async () => {

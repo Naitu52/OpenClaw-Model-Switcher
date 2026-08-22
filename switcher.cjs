@@ -627,6 +627,83 @@ function doDeleteProvider(id, force=false) {
   return { ok: true, deleted: id, orphansCleaned, liveDeps: [...liveDeps] };
 }
 
+// Single-URL fast refresh for one provider. Used by doRefreshAllProviders to
+// keep the loop bounded — doProbe's multi-URL fallback + 15s internal fetch
+// timeout would make 5 providers take 5+ minutes if any one is unreachable.
+// Trades breadth (no URL fallback) for speed: if the configured baseUrl is
+// wrong, the provider reports failure; user can fix via the edit button.
+async function refreshOneProviderFast(id, p, perAttemptMs = 3000) {
+  if (!p.apiKey) return { provider: id, ok: false, error: 'no api key', skipped: true };
+  const baseUrl = (p.baseUrl || '').replace(/\/+$/, '');
+  if (!baseUrl) return { provider: id, ok: false, error: 'no baseUrl' };
+
+  // baseUrl can be either the API root (https://api.deepseek.com) or include /v1
+  // (http://localhost:12345/v1). Handle both without doubling up.
+  const url = baseUrl.endsWith('/v1') ? baseUrl + '/models' : baseUrl + '/v1/models';
+  const t0 = Date.now();
+  try {
+    const resp = await fetch(url, {
+      headers: { 'Authorization': 'Bearer ' + p.apiKey },
+      signal: AbortSignal.timeout(perAttemptMs),
+    });
+    if (!resp.ok) return { provider: id, ok: false, error: `HTTP ${resp.status}`, elapsedMs: Date.now() - t0 };
+    const data = await resp.json();
+    const raw = data.data || data;
+    if (!Array.isArray(raw) || !raw.length) return { provider: id, ok: false, error: 'empty model list', elapsedMs: Date.now() - t0 };
+
+    // Update config (replaces provider.models wholesale) + auto-prune stale
+    // agents.defaults.models[provider/*] entries. Mirrors doProbe's v6.3.0
+    // behavior so refresh-all is a full re-sync across all providers.
+    const c = read();
+    if (!c.models) c.models = { mode: 'merge', providers: {} };
+    if (!c.models.providers) c.models.providers = {};
+    c.models.providers[id] = {
+      baseUrl: p.baseUrl,
+      apiKey: p.apiKey,
+      api: 'openai-completions',
+      authHeader: true,
+      models: raw.map(m => ({ id: m.id, name: m.id, input: ['text'], contextWindow: 128000, maxTokens: 8192 })),
+    };
+    if (!c.agents.defaults.models) c.agents.defaults.models = {};
+    const probedIds = new Set(raw.map(m => m.id));
+    const keepByAgent = new Set();
+    if (c.agents.list) for (const a of c.agents.list) {
+      const primary = a?.model?.primary;
+      if (primary && primary.startsWith(id + '/')) keepByAgent.add(primary);
+    }
+    const prefix = id + '/';
+    let removed = 0;
+    for (const key of Object.keys(c.agents.defaults.models)) {
+      if (!key.startsWith(prefix)) continue;
+      if (keepByAgent.has(key)) continue;
+      const xid = key.slice(prefix.length);
+      if (!probedIds.has(xid)) { delete c.agents.defaults.models[key]; removed++; }
+    }
+    write(c);
+    log(`Refresh ${id}: ${raw.length} models (pruned ${removed})`);
+    return { provider: id, ok: true, count: raw.length, removed, elapsedMs: Date.now() - t0 };
+  } catch (e) {
+    return { provider: id, ok: false, error: e.message, elapsedMs: Date.now() - t0 };
+  }
+}
+
+// Re-probe every configured provider to refresh its model list from the live API.
+// Each provider is independent — failures don't block others. With 3s per-attempt
+// timeout, 5 providers complete in ~15s worst case (vs 5+ min via doProbe).
+async function doRefreshAllProviders({perAttemptMs = 3000} = {}) {
+  const c = read();
+  if (!c.models?.providers) return { ok: true, total: 0, succeeded: 0, failed: 0, results: [] };
+  const providerIds = Object.keys(c.models.providers);
+  const results = [];
+  for (const id of providerIds) {
+    results.push(await refreshOneProviderFast(id, c.models.providers[id], perAttemptMs));
+  }
+  const succeeded = results.filter(r => r.ok).length;
+  const failed = results.length - succeeded;
+  log(`Refresh-all: ${succeeded}/${results.length} ok (perAttemptMs=${perAttemptMs})`);
+  return { ok: true, total: results.length, succeeded, failed, results };
+}
+
 // ---- HTTP server ----
 
 const srv = http.createServer(async (req,res)=>{
@@ -735,6 +812,7 @@ const srv = http.createServer(async (req,res)=>{
       }
       if(p==='/api/providers/update') return json(res,doUpdateProvider(b.id,b));
       if(p==='/api/providers/delete') return json(res,doDeleteProvider(b.id,!!(b?.force||q.force==='true'||q.force==='1')));
+      if(p==='/api/providers/refresh-all') return json(res,await doRefreshAllProviders());
       if(p==='/api/rollback') {
         if(!b.path||!fs.existsSync(b.path)) return json(res,{error:'Backup file not found'},400);
         const tmp=CONFIG+'.new';
