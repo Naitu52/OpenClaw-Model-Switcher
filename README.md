@@ -129,6 +129,7 @@ Common (works without CLI):
     POST /api/agents/defaults/models/prune               # real cleanup; respects ?dryRun=true or body.dryRun
     POST /api/providers/update            # {id, baseUrl?, apiKey?, api?, authHeader?}  — patch existing
     POST /api/providers/delete            # {id, force?}  — refuses if any agent's model.primary uses it
+    POST /api/providers/refresh-all       # re-probe every configured provider; 3s/attempt, full re-sync
     POST /api/rollback                    # {path: '<backup path>'}
     POST /api/agent/create                # {id, workspaceTemplate, [appId, appSecret]}
     POST /api/agent/delete                # {id}
