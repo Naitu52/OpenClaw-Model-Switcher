@@ -504,11 +504,28 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <!-- Modal: 通用确认 (替代 confirm()) -->
   <div v-if="confirmDialog.show" class="modal" @click.self="confirmDialog.show=false;confirmDialog._resolve?.(false)">
     <div class="mc" style="max-width:480px">
+    <div class="mc" style="max-width:480px">
       <h3 style="margin-top:0">{{ confirmDialog.title }}</h3>
       <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;padding:6px 0;color:#222">{{ confirmDialog.body }}</div>
       <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
         <button class="btn sec" @click="confirmDialog.show=false;confirmDialog._resolve?.(false)">{{ confirmDialog.cancelText }}</button>
         <button :class="confirmDialog.danger?'btn danger-btn':'btn pri'" @click="confirmDialog.show=false;confirmDialog._resolve?.(true)">{{ confirmDialog.confirmText }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: Token 输入 (auth 必需时) -->
+  <div v-if="showAuthModal" class="modal" style="z-index:300">
+    <div class="mc" style="max-width:480px">
+      <h3 style="margin-top:0">🔐 需要 Token</h3>
+      <div style="font-size:13px;line-height:1.5;color:#222;padding:6px 0">
+        这个 switcher 启用了 Token 认证。从启动它的命令行 (或 .bat 启动器) 里能找到。
+      </div>
+      <label class="mlabel">Bearer Token</label>
+      <input v-model="showAuthModal.value" placeholder="粘到 SWITCHER_TOKEN" @keyup.enter="showAuthModal.resolve?.(showAuthModal.value); showAuthModal=null" autofocus>
+      <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn sec" @click="showAuthModal.reject?.(); showAuthModal=null">取消</button>
+        <button class="btn pri" @click="showAuthModal.resolve?.(showAuthModal.value); showAuthModal=null" :disabled="!showAuthModal.value">确认</button>
       </div>
     </div>
   </div>
@@ -652,9 +669,48 @@ createApp({
     }
 
     // API calls
-    async function api(path,opts){
-      const r=await fetch(path,opts);
-      if(!r.ok)throw new Error(`HTTP ${r.status}`);
+    // ---- Auth (#13): persist bearer token in localStorage, auto-attach to every call ----
+    const authToken = ref(localStorage.getItem('switcher_token') || '');
+    const showAuthModal = ref(false);
+    const authRequired = ref(false);  // becomes true if server demands auth
+    function setAuthToken(t) {
+      authToken.value = t || '';
+      if (t) localStorage.setItem('switcher_token', t);
+      else localStorage.removeItem('switcher_token');
+    }
+    async function askToken() {
+      // Returns a promise that resolves when user enters a valid token
+      // (or rejects if they cancel).
+      return new Promise((resolve, reject) => {
+        showAuthModal.value = {resolve, reject, value: ''};
+      });
+    }
+    async function api(path, opts = {}) {
+      const headers = Object.assign({}, opts.headers || {});
+      if (authToken.value) headers['Authorization'] = 'Bearer ' + authToken.value;
+      const r = await fetch(path, Object.assign({}, opts, {headers}));
+      if (r.status === 401) {
+        // Auth required. Probe if it's because the server needs auth at all
+        // or just our token is bad. Ask user for a new one.
+        try {
+          const status = await fetch('/api/auth/status').then(r => r.json());
+          if (status.required) {
+            authRequired.value = true;
+            const t = await askToken();
+            if (!t) throw new Error('Auth required');
+            setAuthToken(t);
+            // Retry once with the new token
+            return api(path, opts);
+          }
+        } catch (e) { /* fall through to error */ }
+        throw new Error(`HTTP 401`);
+      }
+      if (!r.ok) {
+        // Try to extract server-provided error code/message
+        let detail = `HTTP ${r.status}`;
+        try { const j = await r.json(); if (j.error) detail += ' - ' + j.error; if (j.code) detail += ' [' + j.code + ']'; } catch {}
+        throw new Error(detail);
+      }
       return r.json();
     }
 
@@ -992,12 +1048,22 @@ createApp({
       showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,
       editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
       confirmDialog,askConfirm,
+      authToken,showAuthModal,setAuthToken,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
       loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
       loadFeishu,getFeishuBinding,openFeishuBotModal,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
       startFeishuReg,pollReg,saveRegBot,closeGuidedBot
     };
+  },
+  async mounted() {
+    // Probe auth status on first load. If server requires token and we
+    // don't have one stored, the next API call will trigger the modal.
+    try {
+      const r = await fetch('/api/auth/status');
+      const j = await r.json();
+      authRequired.value = !!j.required;
+    } catch {}
   }
 }).mount('#app');
 </script>

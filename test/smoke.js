@@ -362,6 +362,81 @@ test('error responses include stable code field', () => withInstance(async () =>
     }
 }));
 
+// ---- Auth tests (separate instance with SWITCHER_TOKEN set) ----
+function startAuthInstance(token) {
+    buildFakeConfig();
+    const env = Object.assign({}, process.env, {
+        OPENCLAW_HOME: FAKE_HOME,
+        OPENCLAW_WS:   FAKE_WS,
+        OPENCLAW_AGENTS: path.join(FAKE_HOME, 'agents'),
+        SWITCHER_PORT: String(TEST_PORT),
+        SWITCHER_LOG: path.join(TMP_ROOT, 'switcher.log'),
+        SWITCHER_BACKUP_DIR: path.join(TMP_ROOT, 'backups'),
+        SWITCHER_SCENES: path.join(TMP_ROOT, 'scenes.json'),
+        SWITCHER_TOKEN: token,
+    });
+    return spawn(process.execPath, [SWITCHER_CJS], { cwd: SWITCHER_DIR, env, stdio: ['ignore', 'pipe', 'pipe'] });
+}
+
+async function withAuthInstance(token, fn) {
+    const proc = startAuthInstance(token);
+    let exitCode = 1;
+    try {
+        // Wait for /api/auth/status (which is always open) to return 200
+        const start = Date.now();
+        let ready = false;
+        while (Date.now() - start < 8000) {
+            try {
+                const r = await http_get(`http://localhost:${TEST_PORT}/api/auth/status`);
+                if (r.status === 200) { ready = true; break; }
+            } catch {}
+            await new Promise(r => setTimeout(r, 200));
+        }
+        if (!ready) throw new Error('auth instance did not become ready in 8s');
+        await fn();
+        exitCode = 0;
+    } finally {
+        try { proc.kill('SIGTERM'); } catch {}
+        await new Promise(r => setTimeout(r, 500));
+        try { proc.kill('SIGKILL'); } catch {}
+    }
+    return exitCode;
+}
+
+test('GET /api/auth/status reports required=true when token set', () => withAuthInstance('secret-123', async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/auth/status`);
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.required !== true) throw new Error(`expected required=true, got ${j.required}`);
+}));
+
+test('requests without token return 401', () => withAuthInstance('secret-123', async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/agents`);
+    if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.code !== 'AUTH_REQUIRED') throw new Error(`expected AUTH_REQUIRED, got ${j.code}`);
+}));
+
+test('requests with valid token succeed', () => withAuthInstance('secret-123', async () => {
+    const r = await new Promise((resolve, reject) => {
+        const req = http.request({
+            method: 'GET', hostname: 'localhost', port: TEST_PORT, path: '/api/agents',
+            headers: { 'Authorization': 'Bearer secret-123' }
+        }, (res) => { let b=''; res.on('data', c => b += c); res.on('end', () => resolve({status:res.statusCode, body:b})); });
+        req.on('error', reject); req.end();
+    });
+    if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (!Array.isArray(j)) throw new Error('expected agents array');
+}));
+
+test('POST /api/auth/login verifies token', () => withAuthInstance('secret-123', async () => {
+    const good = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'secret-123' });
+    if (good.status !== 200 || !JSON.parse(good.body).ok) throw new Error('good token should pass');
+    const bad = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'wrong' });
+    if (bad.status !== 401) throw new Error(`wrong token should be 401, got ${bad.status}`);
+}));
+
 // -------- RUN --------
 
 (async () => {

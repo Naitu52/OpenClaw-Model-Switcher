@@ -747,9 +747,31 @@ async function doRefreshAllProviders({perAttemptMs = 3000} = {}) {
 
 // ---- HTTP server ----
 
+// ---- Optional bearer-token auth (#13) ----
+// If SWITCHER_TOKEN is set, all endpoints (except /api/auth/*) require it.
+// The token can be any non-empty string; client sends `Authorization: Bearer <token>`.
+// /api/auth/status tells the client whether auth is required; /api/auth/login lets
+// the client verify a token before saving it client-side.
+const AUTH_TOKEN = (process.env.SWITCHER_TOKEN || '').trim();
+function authEnabled() { return !!AUTH_TOKEN; }
+function authOk(req) {
+  if (!authEnabled()) return true;                 // open mode (dev / local-only)
+  if (req.url === '/api/auth/status') return true;  // meta endpoint always open
+  if (req.url === '/api/auth/login') return true;   // token verification always open
+  const h = req.headers['authorization'] || '';
+  if (h === 'Bearer ' + AUTH_TOKEN) return true;
+  return false;
+}
+function authForbidden(res) {
+  return err(res, 'AUTH_REQUIRED', 'Authentication required (Authorization: Bearer <token>)', 401);
+}
+
 const srv = http.createServer(async (req,res)=>{
   const {method}=req; const u=new URL(req.url,`http://localhost:${PORT}`);
   const p=u.pathname; const q=Object.fromEntries(u.searchParams);
+
+  // Auth gate (before CORS preflight, so 401s include the right CORS headers below)
+  if (!authOk(req)) return authForbidden(res);
 
   // CORS preflight
   if(method==='OPTIONS') {
@@ -764,6 +786,27 @@ const srv = http.createServer(async (req,res)=>{
 
   try {
     // GET
+    if(method==='GET'&&p==='/api/auth/status') return json(res, {ok: true, required: authEnabled()});
+    if(method==='POST'&&p==='/api/auth/login') {
+      // Body: {token: '...'} - returns 200 if matches, 401 if not.
+      // Allows client to verify before saving to localStorage.
+      let b = {};
+      try { b = JSON.parse((req.headers['content-length']|0 > 0 ? '' : '{}')); } catch(e) {}
+      // Read body properly
+      return new Promise(resolve => {
+        let raw = '';
+        req.on('data', c => raw += c);
+        req.on('end', () => {
+          try { b = raw ? JSON.parse(raw) : {}; } catch(e) { b = {}; }
+          if (!authEnabled()) { resolve(json(res, {ok: true, required: false})); return; }
+          if (typeof b.token === 'string' && b.token === AUTH_TOKEN) {
+            resolve(json(res, {ok: true, required: true, valid: true}));
+          } else {
+            resolve(err(res, 'AUTH_INVALID', 'Invalid token', 401, {valid: false}));
+          }
+        });
+      });
+    }
     if(method==='GET'&&p==='/api/status') return json(res,getStatus());
     if(method==='GET'&&p==='/api/feishu/diagnostics') {
       try{
