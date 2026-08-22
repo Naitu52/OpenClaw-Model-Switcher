@@ -42,7 +42,7 @@ const SKIP_DIRS = new Set([
 
 function quickParents() {
     const all = process.platform === 'win32' ? [
-        'D:\\', 'C:\\',
+        'C:\\',
         process.env.ProgramFiles || 'C:\\Program Files',
         path.join(process.env.APPDATA || '', '..', '..'),
         path.join(os.homedir(), '..'),
@@ -148,7 +148,6 @@ function detectOpenClawHome() {
         return process.env.OPENCLAW_HOME;
 
     const wins = [
-        'D:\\openclaw\\.openclaw',
         'C:\\openclaw\\.openclaw',
         path.join(process.env.APPDATA || '', 'openclaw'),
     ];
@@ -186,7 +185,6 @@ function detectOpenClawWs(home) {
     const sibling = path.join(path.dirname(home), 'workspace');
     if (fs.existsSync(sibling)) return sibling;
     return firstExisting(
-        'D:\\openclaw\\workspace',
         'C:\\openclaw\\workspace',
         path.join(os.homedir(), 'workspace'),
         sibling
@@ -213,7 +211,6 @@ function detectOpenClawCli() {
     if (fromPath) return fromPath;
 
     const cands = process.platform === 'win32' ? [
-        'D:\\nodejs\\node_global\\node_modules\\openclaw\\openclaw.mjs',
         'C:\\Program Files\\nodejs\\node_modules\\openclaw\\openclaw.mjs',
         path.join(process.env.APPDATA || '', 'npm', 'node_modules', 'openclaw', 'openclaw.mjs'),
         path.join(process.env.LOCALAPPDATA || '', 'npm', 'node_modules', 'openclaw', 'openclaw.mjs'),
@@ -1090,7 +1087,10 @@ const srv = http.createServer(async (req,res)=>{
       try {
         if (process.platform === 'win32') {
           spawn('explorer.exe', [reqPath], { detached: true, stdio: 'ignore' });
+        } else if (process.platform === 'darwin') {
+          spawn('open', [reqPath], { detached: true, stdio: 'ignore' });
         } else {
+          // Linux + others
           spawn('xdg-open', [reqPath], { detached: true, stdio: 'ignore' });
         }
         log('Open: ' + reqPath);

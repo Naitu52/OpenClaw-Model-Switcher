@@ -31,6 +31,7 @@
     "index.html",
     "vue.global.prod.js",
     "启动Switcher.bat",
+    "启动Switcher.sh",
     "一键部署.bat",
     "停止Switcher.bat",
     "重启Switcher.bat",
