@@ -249,7 +249,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div class="card">
     <div class="f" style="justify-content:space-between">
       <div class="hdr">🤖 Agent管理</div>
-      <button class="btn pri xs" @click="showCreate=true">+ 新建</button>
+      <button class="btn pri xs" @click="openCreate">+ 新建</button>
     </div>
     <div class="kr" v-for="a in agents" :key="a.id" style="font-size:12px;padding:6px 0">
       <span style="font-weight:600;width:80px">{{ a.id }}</span>
@@ -864,11 +864,20 @@ createApp({
       kl.value=false;
     }
 
+    // Open the create-agent modal. Wired explicitly (not inline @click="showCreate=true")
+    // so we get a clear log trail and can fail loudly if anything goes wrong.
+    function openCreate() {
+      if (typeof window !== 'undefined' && window.console) console.log('[openCreate] click, showCreate before=', showCreate.value);
+      newAgent.value = {id:'',tpl:'comfyui',appId:'',appSecret:''};
+      showCreate.value = true;
+      if (typeof window !== 'undefined' && window.console) console.log('[openCreate] showCreate after=', showCreate.value);
+    }
+
     async function createAgent(){
       // Validate first so the click always does something visible (no more "dead
       // button" when the user just didn't fill the ID).
+      if (typeof window !== 'undefined' && window.console) console.log('[createAgent] invoked, newAgent=', JSON.parse(JSON.stringify(newAgent.value)));
       const id = (newAgent.value.id || '').trim();
-      if (typeof window !== 'undefined' && window.console) console.log('[createAgent] clicked, id=', JSON.stringify(id));
       if (!id) {
         showToast('请先填 Agent ID (英文字母开头, 2-30 字符)', 'err');
         // Focus the input so they can type immediately
@@ -882,6 +891,7 @@ createApp({
       }
       try{
         const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, tpl:newAgent.value.tpl, appId:newAgent.value.appId, appSecret:newAgent.value.appSecret, workspaceTemplate:newAgent.value.tpl})});
+        if (typeof window !== 'undefined' && window.console) console.log('[createAgent] api response:', d);
         if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent '+id+' 创建成功')}
         else{showToast('创建失败: '+(d.error||'unknown'),'err')}
       }catch(e){
@@ -1182,7 +1192,7 @@ createApp({
       confirmDialog,askConfirm,
       authToken,showAuthModal,authModalData,setAuthToken,confirmAuthToken,cancelAuthToken,
       theme,toggleTheme,modelFilter,filteredGroups,
-      refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
+      refresh,apply,batchApply,resetSelection,probe,openCreate,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
       loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
       loadFeishu,getFeishuBinding,openFeishuBotModal,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
