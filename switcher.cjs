@@ -40,9 +40,21 @@ const SKIP_DIRS = new Set([
     'var', 'private', 'tmp', 'etc',
 ]);
 
+// Enumerate mounted Windows drive roots (A: through Z:). Replaces the old
+// hardcoded 'D:\\' hint so users with openclaw on any drive get discovered.
+function listWindowsDrives() {
+  if (process.platform !== 'win32') return [];
+  const out = [];
+  for (let c = 65; c <= 90; c++) {
+    const drive = String.fromCharCode(c) + ':\\';
+    try { if (fs.existsSync(drive)) out.push(drive); } catch (e) {}
+  }
+  return out;
+}
+
 function quickParents() {
     const all = process.platform === 'win32' ? [
-        'C:\\',
+        ...listWindowsDrives(),
         process.env.ProgramFiles || 'C:\\Program Files',
         path.join(process.env.APPDATA || '', '..', '..'),
         path.join(os.homedir(), '..'),
