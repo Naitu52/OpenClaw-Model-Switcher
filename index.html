@@ -6,69 +6,101 @@
 <title>Model Switcher</title>
 <script src="./vue.global.prod.js"></script>
 <style>
+/* ---- Theme tokens (#7) — driven by [data-theme] on <html> ---- */
+:root,[data-theme="light"]{--bg:#f5f5f7;--fg:#1d1d1f;--card:#fff;--border:#d2d2d7;--muted:#6e6e73;--soft:#fafafa;--soft2:#f0f0f2;--accent:#0071e3;--accent-soft:#e8f0fe;--code-bg:#1d1d1f;--code-fg:#c7c7c7}
+[data-theme="dark"]{
+  --bg:#1c1c1e;--fg:#e8e8ed;--card:#2c2c2e;--border:#3a3a3c;--muted:#98989d;--soft:#2c2c2e;--soft2:#3a3a3c;
+  --accent:#0a84ff;--accent-soft:#1e2a44;--code-bg:#0a0a0c;--code-fg:#e8e8ed;
+}
+body{background:var(--bg);color:var(--fg)}
+.card{background:var(--card);border:1px solid var(--border)}
+input,select,textarea{background:var(--card);color:var(--fg);border-color:var(--border)}
+input:focus,select:focus,textarea:focus{border-color:var(--accent)}
+.tbl th{background:var(--soft2);color:var(--fg)}
+.tbl tr:hover td{background:var(--soft)}
+.tbl tr.flash td{background:#34c759;color:#fff}
+.ovi{background:var(--soft)}
+.t{color:var(--muted)}.e{color:#ff6b6b}.o{color:#51cf66}
+.sub,.mlabel,label{color:var(--muted)}
+.tg.tgg{background:#1e3a1e;color:#51cf66}
+.tg.tgb{background:var(--accent-soft);color:var(--accent)}
+.tg.tggy{background:var(--soft2);color:var(--muted)}
+.tg.tgr{background:#3a1e1e;color:#ff6b6b}
+.sec{background:var(--soft2);color:var(--fg)}.sec:hover{filter:brightness(1.1)}
+.mc{background:var(--card);color:var(--fg);border:1px solid var(--border)}
+.ac{background:var(--soft);color:var(--fg)}.ac.ch{background:var(--accent-soft);border-color:var(--accent)}
+.kr{border-bottom-color:var(--soft2)}
+.mr{border-bottom-color:var(--soft2)}.mr:hover{background:var(--soft)}
+.fi{border-bottom-color:var(--soft2)}.fi:hover,.fi.a{background:var(--accent-soft);color:var(--accent)}
+.ml,.fl,.fr{border-color:var(--border)}
+.lg{background:var(--code-bg);color:var(--code-fg)}
+.modal{background:rgba(0,0,0,.5)}
+.toast.ok{background:#1e3a1e;color:#51cf66;border-color:#34c759}
+.toast.err{background:#3a1e1e;color:#ff6b6b;border-color:#ff6b6b}
+.toast.warn{background:#3a2e1e;color:#ffd43b;border-color:#ffd43b}
+.danger-btn{background:#ff375f;color:#fff}
+.mc .mlabel{color:var(--muted)}
+.danger-btn:hover{background:#e8324f}
+
 *{margin:0;padding:0;box-sizing:border-box}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:#f5f5f7;color:#1d1d1f;padding:12px}
+body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:12px;transition:background .2s,color .2s}
 .c{max-width:1200px;margin:0 auto}
 .h1{font-size:20px;font-weight:600;margin-bottom:2px}
-.sub{color:#6e6e73;font-size:12px;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
-.card{background:#fff;border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
+.sub{font-size:12px;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.card{border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
 .hdr{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
 .hdr .badge{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
 .f{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .g2{gap:4px}
 .mt{margin-top:8px}.mb{margin-bottom:8px}
-label{font-size:12px;font-weight:500;color:#6e6e73;white-space:nowrap}
-input,select,textarea{padding:5px 8px;border:1.5px solid #d2d2d7;border-radius:7px;font-size:12px;outline:none;background:#fff;flex:1}
-input:focus,select:focus,textarea:focus{border-color:#0071e3}
+label{font-size:12px;font-weight:500;white-space:nowrap}
+input,select,textarea{padding:5px 8px;border:1.5px solid;border-radius:7px;font-size:12px;outline:none;flex:1;transition:border-color .15s}
 textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
 .btn{padding:5px 12px;border-radius:7px;font-size:11px;font-weight:500;border:none;cursor:pointer;transition:.12s;display:inline-flex;align-items:center;gap:4px}
-.pri{background:#0071e3;color:#fff}.pri:hover{background:#0077ed}
-.sec{background:#e8e8ed;color:#1d1d1f}.sec:hover{background:#ddd}
+.pri{background:var(--accent);color:#fff}.pri:hover{filter:brightness(1.1)}
+.sec{border-radius:7px}
 .dng{background:#ff375f;color:#fff}.dng:hover{background:#e8324f}
 .scc{background:#34c759;color:#fff}.scc:hover{background:#30b753}
 .xs{padding:2px 8px;font-size:10px;border-radius:5px}
 .btn:disabled{opacity:.5;cursor:not-allowed}.btn:active:not(:disabled){transform:scale(.96)}
 .tg{font-size:10px;padding:1px 5px;border-radius:4px;font-weight:500;flex-shrink:0}
-.tgg{background:#deffde;color:#1a7d1a}.tgb{background:#e8f0fe;color:#0071e3}.tggy{background:#f0f0f2;color:#86868b}.tgr{background:#ffe5e5;color:#b31919}
-.e{color:#b31919;font-size:12px}.o{color:#1a7d1a;font-size:12px}
-.t{font-size:11px;color:#86868b}
+.e{font-size:12px}.o{font-size:12px}
+.t{font-size:11px}
 .ovg{display:grid;grid-template-columns:repeat(auto-fill,minmax(130px,1fr));gap:6px}
-.ovi{background:#f5f5f7;border-radius:8px;padding:8px 10px;text-align:center}
-.ovi .v{font-size:18px;font-weight:600}.ovi .l{font-size:10px;color:#86868b}
+.ovi{border-radius:8px;padding:8px 10px;text-align:center}
+.ovi .v{font-size:18px;font-weight:600}.ovi .l{font-size:10px;color:var(--muted)}
 .ag{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:6px}
-.ac{background:#f5f5f7;border-radius:10px;padding:10px 12px;border:2px solid transparent;transition:.15s}
-.ac .an{font-size:13px;font-weight:600}.ac .acur{font-size:10px;color:#6e6e73;margin:2px 0 6px;word-break:break-all}
+.ac{border-radius:10px;padding:10px 12px;border:2px solid transparent;transition:.15s}
+.ac .an{font-size:13px;font-weight:600}.ac .acur{font-size:10px;margin:2px 0 6px;word-break:break-all}
 .ac select{width:100%;font-size:11px;padding:4px 6px}
-.ac.ch{border-color:#0071e3;background:#f0f7ff}
-.kr{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;border-bottom:1px solid #f0f0f2}
+.ac.ch{border-color:var(--accent)}
+.kr{display:flex;align-items:center;gap:6px;padding:4px 0;font-size:11px;border-bottom:1px solid var(--soft2)}
 .kr:last-child{border-bottom:none}
-.ml{max-height:200px;overflow-y:auto;border:1px solid #e8e8ed;border-radius:7px}
-.mr{display:flex;align-items:center;gap:5px;padding:3px 6px;font-size:11px;border-bottom:1px solid #f0f0f2}
-.mr:hover{background:#f5f5f7}.mr:last-child{border-bottom:none}
-.mr .k{font-family:monospace;color:#6e6e73;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
+.ml{max-height:200px;overflow-y:auto;border:1px solid;border-radius:7px}
+.mr{display:flex;align-items:center;gap:5px;padding:3px 6px;font-size:11px;border-bottom:1px solid var(--soft2)}
+.mr:last-child{border-bottom:none}
+.mr .k{font-family:monospace;color:var(--muted);flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;cursor:pointer}
 .fv{display:flex;gap:8px;min-height:200px}
-.fl{width:200px;flex-shrink:0;border:1px solid #e8e8ed;border-radius:7px;overflow-y:auto;max-height:350px}
-.fr{flex:1;border:1px solid #e8e8ed;border-radius:7px;padding:6px;overflow-y:auto;max-height:350px}
-.fi{padding:3px 6px;font-size:11px;cursor:pointer;border-bottom:1px solid #f0f0f2;display:flex;justify-content:space-between;align-items:center}
-.fi:hover{background:#e8f0fe}.fi.a{background:#e8f0fe;font-weight:500}
-.lg{background:#1d1d1f;color:#c7c7c7;border-radius:8px;padding:6px 8px;font-family:monospace;font-size:10px;line-height:1.5;max-height:150px;overflow-y:auto}
+.fl{width:200px;flex-shrink:0;border:1px solid;border-radius:7px;overflow-y:auto;max-height:350px}
+.fr{flex:1;border:1px solid;border-radius:7px;padding:6px;overflow-y:auto;max-height:350px}
+.fi{padding:3px 6px;font-size:11px;cursor:pointer;border-bottom:1px solid var(--soft2);display:flex;justify-content:space-between;align-items:center}
+.fi:hover,.fi.a{font-weight:500}
+.lg{border-radius:8px;padding:6px 8px;font-family:monospace;font-size:10px;line-height:1.5;max-height:150px;overflow-y:auto}
 .lg .err{color:#ff6b6b}.lg .ok{color:#51cf66}
-.modal{position:fixed;inset:0;background:rgba(0,0,0,.35);display:flex;align-items:center;justify-content:center;z-index:100}
-.mc{background:#fff;border-radius:14px;padding:20px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto}
+.modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:100}
+.mc{border-radius:14px;padding:20px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto}
 .mc h3{font-size:15px;margin-bottom:10px}
-.mc .mlabel{display:block;font-size:11px;font-weight:500;margin-top:8px;margin-bottom:3px;color:#6e6e73}
+.mc .mlabel{display:block;font-size:11px;font-weight:500;margin-top:8px;margin-bottom:3px}
 .mc .ma{display:flex;gap:8px;justify-content:flex-end;margin-top:14px}
-.loading{text-align:center;padding:40px;color:#6e6e73;font-size:14px}
+.loading{text-align:center;padding:40px;font-size:14px}
 .tbl{width:100%;font-size:11px;border-collapse:collapse}
-.tbl th{text-align:left;padding:4px 6px;background:#f5f5f7;font-weight:600}
+.tbl th{text-align:left;padding:4px 6px;font-weight:600}
 .tbl td{padding:3px 6px}
-.tbl tr:hover td{background:#fafafa}
-.tbl tr.flash td{background:#deffde;animation:flash 1.5s ease-out}
+.tbl tr.flash td{animation:flash 1.5s ease-out}
 @keyframes flash{0%{background:#a8e6a8}100%{background:transparent}}
+[data-theme="dark"] .tbl tr.flash td{animation:flashDark 1.5s ease-out}
+@keyframes flashDark{0%{background:#34c759}100%{background:transparent}}
 .toast{position:fixed;top:16px;right:16px;padding:10px 16px;border-radius:8px;font-size:12px;font-weight:500;z-index:200;animation:fadeIn .2s}
-.toast.ok{background:#deffde;color:#1a7d1a;border:1px solid #b3e6b3}
-.toast.err{background:#ffe5e5;color:#b31919;border:1px solid #ffb3b3}
-.toast.warn{background:#fff5d6;color:#8a6a00;border:1px solid #ffe48a}
 @keyframes fadeIn{from{opacity:0;transform:translateY(-8px)}to{opacity:1;transform:translateY(0)}}
 .pulse{animation:pulse 1.5s infinite}
 @keyframes pulse{0%,100%{opacity:1}50%{opacity:.4}}
@@ -84,7 +116,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <!-- Header -->
   <div class="f" style="justify-content:space-between">
     <div>
-      <div class="h1">🐾 Model Switcher</div>
+      <div class="h1">🐾 Model Switcher <span v-if="authRequired" title="Server requires bearer token" style="font-size:13px;color:#d33;margin-left:6px">🔐</span></div>
       <div class="sub">
         <span v-if="loading" class="pulse">加载中...</span>
         <template v-else>
@@ -93,12 +125,16 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
           <span>{{ providers.filter(p=>p.key).length }} Key</span>
           <span v-if="status.port" style="font-family:monospace">:{{ status.port }}</span>
           <span v-if="status.uptime" class="t">运行 {{ uptimeStr }}</span>
-          <span @click="refresh" style="cursor:pointer;color:#0071e3;margin-left:8px">⟳ 刷新</span>
+          <span @click="refresh" style="cursor:pointer;color:var(--accent);margin-left:8px">⟳ 刷新</span>
         </template>
       </div>
     </div>
-    <div v-if="!loading" class="f" style="gap:6px">
+    <div v-if="!loading" class="f" style="gap:6px;align-items:center">
       <span class="tg tgb">v5</span>
+      <button @click="toggleTheme" :title="'切换 ' + (theme==='dark'?'亮色':'暗色') + ' 模式'" style="background:transparent;border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">
+        <span v-if="theme==='dark'">☀️</span>
+        <span v-else>🌙</span>
+      </button>
     </div>
   </div>
 
@@ -156,11 +192,12 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     <div v-if="loading" class="loading">Loading...</div>
     <template v-else>
       <!-- 批量操作 -->
-      <div class="f mb" style="gap:6px">
+      <div class="f mb" style="gap:6px;flex-wrap:wrap">
         <label>批量设置：</label>
+        <input v-model="modelFilter" placeholder="🔍 筛选 (id 或供应商)..." style="max-width:240px;font-size:11px;padding:3px 6px;border:1px solid #d0d0d0;border-radius:6px;background:#fff;color:#222">
         <select v-model="batchModel" style="max-width:300px;font-size:11px">
           <option value="">选择模型...</option>
-          <optgroup v-for="g in groups" :key="g.n" :label="g.n">
+          <optgroup v-for="g in filteredGroups" :key="g.n" :label="g.n">
             <option v-for="m in g.ms" :key="m.k" :value="m.k">{{ m.s }}</option>
           </optgroup>
         </select>
@@ -639,6 +676,7 @@ createApp({
 
     const changedCount = computed(()=>agents.value.filter(a=>a._ch).length);
 
+    const modelFilter = ref('');  // search box for the model pickers (#5)
     const groups = computed(()=>{
       const map={};
       // 从 catalog 获取供应商名
@@ -653,6 +691,14 @@ createApp({
       const r=keyed.map(k=>map[k]).filter(Boolean);
       Object.keys(map).filter(k=>!keyed.includes(k)).forEach(k=>{if(map[k].ms.length)r.push(map[k])});
       return r;
+    });
+    const filteredGroups = computed(() => {
+      const q = modelFilter.value.trim().toLowerCase();
+      if (!q) return groups.value;
+      // Match: provider name OR model id (substring, case-insensitive)
+      return groups.value
+        .map(g => ({...g, ms: g.ms.filter(m => m.k.toLowerCase().includes(q) || g.n.toLowerCase().includes(q))}))
+        .filter(g => g.ms.length > 0);
     });
 
     // Toast
@@ -671,6 +717,18 @@ createApp({
     // API calls
     // ---- Auth (#13): persist bearer token in localStorage, auto-attach to every call ----
     const authToken = ref(localStorage.getItem('switcher_token') || '');
+
+    // ---- Theme (#7): 'light' | 'dark', persisted in localStorage ----
+    const theme = ref(localStorage.getItem('switcher_theme') || 'light');
+    function applyTheme() {
+      document.documentElement.setAttribute('data-theme', theme.value);
+    }
+    function toggleTheme() {
+      theme.value = theme.value === 'dark' ? 'light' : 'dark';
+      localStorage.setItem('switcher_theme', theme.value);
+      applyTheme();
+    }
+    applyTheme();
     const showAuthModal = ref(false);
     const authRequired = ref(false);  // becomes true if server demands auth
     function setAuthToken(t) {
@@ -1049,6 +1107,7 @@ createApp({
       editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
       confirmDialog,askConfirm,
       authToken,showAuthModal,setAuthToken,
+      theme,toggleTheme,modelFilter,filteredGroups,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
       loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
