@@ -868,10 +868,11 @@ createApp({
       // Validate first so the click always does something visible (no more "dead
       // button" when the user just didn't fill the ID).
       const id = (newAgent.value.id || '').trim();
+      if (typeof window !== 'undefined' && window.console) console.log('[createAgent] clicked, id=', JSON.stringify(id));
       if (!id) {
         showToast('请先填 Agent ID (英文字母开头, 2-30 字符)', 'err');
         // Focus the input so they can type immediately
-        const el = document.querySelector('.mc input[ref="newAgentIdInput"], .mc input');
+        const el = document.querySelector('.mc input');
         if (el) el.focus();
         return;
       }
@@ -883,7 +884,10 @@ createApp({
         const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, tpl:newAgent.value.tpl, appId:newAgent.value.appId, appSecret:newAgent.value.appSecret, workspaceTemplate:newAgent.value.tpl})});
         if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent '+id+' 创建成功')}
         else{showToast('创建失败: '+(d.error||'unknown'),'err')}
-      }catch(e){showToast('创建失败: '+e.message,'err')}
+      }catch(e){
+        if (typeof window !== 'undefined' && window.console) console.error('[createAgent] error', e);
+        showToast('创建失败: '+e.message,'err');
+      }
     }
 
     async function deleteAgent(id){
@@ -1147,6 +1151,24 @@ createApp({
     },300);
 
     onMounted(refresh);
+
+    // Global error handler — anything that throws during click handlers etc.
+    // will be surfaced as a toast (in addition to the browser console). Catches
+    // "no reaction" cases where the only sign is a swallowed error.
+    if (typeof window !== 'undefined') {
+      window.addEventListener('error', (e) => {
+        if (e.error) {
+          showToast('⚠️ ' + (e.error.message || 'JS error'), 'err');
+          if (window.console) console.error('[window.error]', e.error);
+        }
+      });
+      window.addEventListener('unhandledrejection', (e) => {
+        if (e.reason) {
+          showToast('⚠️ ' + (e.reason.message || e.reason), 'err');
+          if (window.console) console.error('[unhandledrejection]', e.reason);
+        }
+      });
+    }
 
     return{
       agents,models,providers,catalog,backups,logs,scenes,status,loading,
