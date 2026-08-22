@@ -503,11 +503,76 @@ async function doProbe(provider,apiKey,baseUrl) {
       };
       if(!c.agents.defaults.models) c.agents.defaults.models={};
       models.forEach(m=>{if(!c.agents.defaults.models[m.key])c.agents.defaults.models[m.key]={};});
+
+      // ---- auto-prune orphans for this provider in agents.defaults.models ----
+      // A key `${provider}/X` is an orphan if X is no longer in the freshly-probed
+      // model list, AND no agent currently uses it as `model.primary`. This makes
+      // probe() a real-time read: every successful probe reconciles.
+      {
+        const probedIds = new Set(models.map(m => m.id));
+        const keepByAgent = new Set();
+        if (c.agents.list) for (const a of c.agents.list) {
+          const p = a?.model?.primary;
+          if (p && p.startsWith(provider + '/')) keepByAgent.add(p);
+        }
+        const prefix = provider + '/';
+        let removed = 0;
+        for (const key of Object.keys(c.agents.defaults.models)) {
+          if (!key.startsWith(prefix)) continue;
+          if (keepByAgent.has(key)) continue;
+          const id = key.slice(prefix.length);
+          if (!probedIds.has(id)) {
+            delete c.agents.defaults.models[key];
+            removed++;
+          }
+        }
+        if (removed) log(`Probe ${provider}: pruned ${removed} orphan(s) from agents.defaults.models`);
+      }
+
       write(c); log(`Probe ${provider}: ${models.length} models via ${probeUrl}`);
       return {ok:true,count:models.length,models};
     } catch(e) { continue; }
   }
   return {ok:false,error:`All probe URLs failed for ${provider}`};
+}
+
+// ---- Orphan pruning (global, no API call needed) ----
+// Removes keys from agents.defaults.models that are:
+//   - NOT in use by any agent's model.primary
+//   - AND NOT present in any models.providers[*].models[*].id
+// In-use keys (e.g. minimax/MiniMax-M3) are kept even if no provider has them
+// (handles remote-only models registered outside the switcher).
+function doPruneOrphans({dryRun=false}={}) {
+  const c = read();
+  if (!c.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys: [] };
+
+  // Ground truth: any model id listed under any provider
+  const known = new Set();
+  if (c.models?.providers) {
+    for (const [pid, p] of Object.entries(c.models.providers)) {
+      for (const m of (p.models || [])) {
+        if (m?.id) known.add(`${pid}/${m.id}`);
+      }
+    }
+  }
+  // In-use set: any agent's model.primary
+  const inUse = new Set();
+  if (c.agents?.list) for (const a of c.agents.list) {
+    if (a?.model?.primary) inUse.add(a.model.primary);
+  }
+
+  const removedKeys = [];
+  for (const key of Object.keys(c.agents.defaults.models)) {
+    if (inUse.has(key)) continue;
+    if (known.has(key)) continue;
+    removedKeys.push(key);
+  }
+  if (!dryRun && removedKeys.length) {
+    for (const k of removedKeys) delete c.agents.defaults.models[k];
+    write(c);
+    log(`Prune orphans: removed ${removedKeys.length} (${removedKeys.join(', ')})`);
+  }
+  return { ok: true, removed: removedKeys.length, removedKeys, dryRun, knownCount: known.size, inUseCount: inUse.size };
 }
 
 // ---- HTTP server ----
@@ -598,17 +663,24 @@ const srv = http.createServer(async (req,res)=>{
       const stat=fs.statSync(fp);
       return json(res,{content:fs.readFileSync(fp,'utf8'),size:stat.size,modified:stat.mtime.toISOString()});
     }
+    // GET prune is always dryRun (safe for browser)
+    if(method==='GET'&&p==='/api/agents/defaults/models/prune') return json(res,doPruneOrphans({dryRun:true}));
 
     // POST
     if(method==='POST') {
       let b;
-      try { b=await body(req); } catch(e) { return json(res,{error:'Invalid JSON'},400); }
+      try { b=await body(req); } catch(e) { b = {}; }
 
       if(p==='/api/switch') {
         const n=doSwitch(b.changes||{});
         return json(res,{status:'ok',changed:n});
       }
       if(p==='/api/probe') return json(res,await doProbe(b.provider,b.apiKey,b.baseUrl||''));
+      // POST prune: opt-in to dryRun via body.dryRun or ?dryRun=true. Empty body = real prune.
+      if(p==='/api/agents/defaults/models/prune') {
+        const dry = !!(b?.dryRun || q.dryRun==='true' || q.dryRun==='1');
+        return json(res,doPruneOrphans({dryRun: dry}));
+      }
       if(p==='/api/rollback') {
         if(!b.path||!fs.existsSync(b.path)) return json(res,{error:'Backup file not found'},400);
         const tmp=CONFIG+'.new';

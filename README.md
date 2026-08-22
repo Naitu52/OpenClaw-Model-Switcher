@@ -59,6 +59,28 @@ Feishu register endpoints require both CLI and FEISHU_REG; if missing they
 return 503. Everything else (agents, providers, backups, file editor)
 works without the CLI.
 
+## Model registry sync (v6.3+)
+
+`agents.defaults.models` is a registry of every model the user has ever
+referenced. Without explicit cleanup, deleting a GGUF from disk (or
+removing it from a provider's `models` list) leaves orphan keys behind.
+The switcher reconciles in two ways:
+
+1. **Real-time on probe** — `POST /api/probe` now also prunes any
+   `${provider}/X` key from `agents.defaults.models` where `X` is no
+   longer in the freshly-probed list, AND no agent currently uses it as
+   `model.primary`. So every successful probe is a live sync.
+2. **Manual cleanup** — `POST /api/agents/defaults/models/prune` (or
+   `GET ...?dryRun=true` for a safe preview) does a global pass using
+   each provider's current `models` list as ground truth. Removes any
+   key that is (a) not in use by any agent, AND (b) not present in any
+   `models.providers[*].models[*].id`. In-use keys (e.g. remote-only
+   models registered outside the switcher) are always preserved.
+
+In-use keys are always preserved, so an orphan can never break a live
+agent assignment. After prune, `agents.defaults.models` only contains
+models that are still real, still assigned, or both.
+
 ## Diagnostic
 
     GET /api/status     # uptime, agent count, paths block
@@ -103,6 +125,8 @@ Common (works without CLI):
     GET  /api/feishu/diagnostics
     POST /api/switch                      # {changes: {agentId: modelId}}
     POST /api/probe                       # {provider, apiKey, baseUrl?}
+    GET  /api/agents/defaults/models/prune?dryRun=true   # safe dry-run (always read-only)
+    POST /api/agents/defaults/models/prune               # real cleanup; respects ?dryRun=true or body.dryRun
     POST /api/rollback                    # {path: '<backup path>'}
     POST /api/agent/create                # {id, workspaceTemplate, [appId, appSecret]}
     POST /api/agent/delete                # {id}

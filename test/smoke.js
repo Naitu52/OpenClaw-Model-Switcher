@@ -32,7 +32,15 @@ function buildFakeConfig() {
     fs.mkdirSync(FAKE_WS, { recursive: true });
     const cfg = {
         agents: {
-            defaults: { model: { primary: 'minimax/MiniMax-M3' } },
+            defaults: {
+                model: { primary: 'minimax/MiniMax-M3' },
+                models: {
+                    'minimax/MiniMax-M3': {},                    // in-use + known -> keep
+                    'openai/gpt-oss-20b': {},                    // in-use + known -> keep
+                    'minimax/old-model-removed': {},             // orphan -> remove
+                    'lmstudio/old-embed': {},                    // orphan -> remove
+                },
+            },
             list: [
                 { id: 'agent1', name: 'agent1', model: { primary: 'minimax/MiniMax-M3' } },
                 { id: 'agent2', name: 'agent2', model: { primary: 'openai/gpt-oss-20b' } },
@@ -175,6 +183,52 @@ test('static frontend serves index.html', () => withInstance(async () => {
     const r = await http_get(`http://localhost:${TEST_PORT}/`);
     if (r.status !== 200) throw new Error(`/ HTTP ${r.status}`);
     if (!r.body.includes('<html')) throw new Error('not HTML');
+}));
+
+function http_post(url, body) {
+    return new Promise((resolve, reject) => {
+        const data = body === undefined ? '' : JSON.stringify(body);
+        const u = new URL(url);
+        const req = http.request({
+            method: 'POST',
+            hostname: u.hostname,
+            port: u.port,
+            path: u.pathname + u.search,
+            headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(data) },
+        }, (res) => {
+            let buf = '';
+            res.on('data', c => buf += c);
+            res.on('end', () => resolve({ status: res.statusCode, body: buf }));
+        });
+        req.on('error', reject);
+        if (data) req.write(data);
+        req.end();
+    });
+}
+
+test('GET /api/agents/defaults/models/prune is safe dryRun', () => withInstance(async () => {
+    const r = await http_get(`http://localhost:${TEST_PORT}/api/agents/defaults/models/prune?dryRun=true`);
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (!j.dryRun) throw new Error('GET should always be dryRun');
+    const removed = new Set(j.removedKeys || []);
+    if (!removed.has('minimax/old-model-removed')) throw new Error(`expected orphan detected, got: ${[...removed].join(',')}`);
+    if (!removed.has('lmstudio/old-embed')) throw new Error(`expected orphan detected, got: ${[...removed].join(',')}`);
+    if (j.removed !== 2) throw new Error(`expected removed=2, got ${j.removed}`);
+}));
+
+test('POST /api/agents/defaults/models/prune cleans orphans, keeps in-use', () => withInstance(async () => {
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/agents/defaults/models/prune`, {});
+    if (r.status !== 200) throw new Error(`HTTP ${r.status} body=${r.body}`);
+    const j = JSON.parse(r.body);
+    if (j.dryRun) throw new Error('POST with empty body should be real prune');
+    if (j.removed !== 2) throw new Error(`expected removed=2, got ${j.removed}`);
+
+    // Verify by re-reading /api/agents - actually we don't have a GET for defaults.models,
+    // so verify via a follow-up dryRun which should now find 0 orphans.
+    const r2 = await http_get(`http://localhost:${TEST_PORT}/api/agents/defaults/models/prune?dryRun=true`);
+    const j2 = JSON.parse(r2.body);
+    if (j2.removed !== 0) throw new Error(`after prune, expected 0 orphans, got ${j2.removed} (${j2.removedKeys?.join(',')})`);
 }));
 
 // -------- RUN --------
