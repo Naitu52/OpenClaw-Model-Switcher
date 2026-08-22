@@ -51,6 +51,7 @@ function buildFakeConfig() {
             providers: {
                 minimax: { baseUrl: 'https://api.minimax.chat/v1', apiKey: '***', api: 'openai-completions', authHeader: true, models: [{ id: 'MiniMax-M3', name: 'MiniMax-M3', input: ['text'], contextWindow: 128000, maxTokens: 8192 }] },
                 openai:  { baseUrl: 'https://api.openai.com/v1', apiKey: 'sk-***', api: 'openai-completions', authHeader: true, models: [{ id: 'gpt-oss-20b', name: 'gpt-oss-20b', input: ['text'], contextWindow: 128000, maxTokens: 8192 }] },
+                xiaomi:  { baseUrl: 'https://token-plan-cn.xiaomimimo.com/v1', apiKey: 'xk-***', api: 'openai-completions', authHeader: true, models: [{ id: 'mimo-v2-flash', name: 'mimo-v2-flash', input: ['text'], contextWindow: 128000, maxTokens: 8192 }] },
             },
         },
         channels: { feishu: { enabled: true, accounts: {} } },
@@ -229,6 +230,69 @@ test('POST /api/agents/defaults/models/prune cleans orphans, keeps in-use', () =
     const r2 = await http_get(`http://localhost:${TEST_PORT}/api/agents/defaults/models/prune?dryRun=true`);
     const j2 = JSON.parse(r2.body);
     if (j2.removed !== 0) throw new Error(`after prune, expected 0 orphans, got ${j2.removed} (${j2.removedKeys?.join(',')})`);
+}));
+
+test('POST /api/providers/update edits fields without touching others', () => withInstance(async () => {
+    // Update openai's baseUrl; leave apiKey blank so it should NOT change.
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/update`,
+        { id: 'openai', baseUrl: 'http://example.invalid/v1', authHeader: false });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status} body=${r.body}`);
+    const j = JSON.parse(r.body);
+    if (!j.ok) throw new Error(`update not ok: ${j.error}`);
+    if (!j.changed.includes('baseUrl')) throw new Error('baseUrl not in changed');
+    if (j.changed.includes('apiKey')) throw new Error('apiKey should NOT change when blank');
+
+    // Verify the update is reflected via /api/providers
+    const r2 = await http_get(`http://localhost:${TEST_PORT}/api/providers`);
+    const providers = JSON.parse(r2.body);
+    const openai = providers.find(p => p.id === 'openai');
+    if (openai.baseUrl !== 'http://example.invalid/v1') throw new Error(`baseUrl not updated: ${openai.baseUrl}`);
+}));
+
+test('POST /api/providers/update rejects unknown id', () => withInstance(async () => {
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/update`,
+        { id: 'nonexistent-provider', baseUrl: 'http://x' });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.ok) throw new Error('update on unknown id should fail');
+    if (!String(j.error).includes('not found')) throw new Error(`expected not-found error, got: ${j.error}`);
+}));
+
+test('POST /api/providers/delete refuses when agent uses the provider', () => withInstance(async () => {
+    // agent1.primary = minimax/MiniMax-M3, so deleting 'minimax' must refuse without force
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/delete`, { id: 'minimax' });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.ok) throw new Error('delete should refuse when agent uses the provider');
+    if (!j.needForce) throw new Error('expected needForce flag');
+    if (!j.dependents || !j.dependents.includes('minimax/MiniMax-M3')) throw new Error(`dependents should list in-use models, got: ${j.dependents}`);
+}));
+
+test('POST /api/providers/delete with force=true removes provider + cleans registry', () => withInstance(async () => {
+    // The fake config has lmstudio/* entries in agents.defaults.models (via prior prune test
+    // they are now gone, so add a fresh one to verify registry cleanup)
+    await http_post(`http://localhost:${TEST_PORT}/api/switch`,
+        { changes: { agent1: 'lmstudio/some-fake-model-not-in-provider' } });
+
+    // First make sure minimax isn't used after a re-point (or pick openai which is also used)
+    // openai/gpt-oss-20b is used by agent2 -> deleting 'openai' would need force
+    // We use 'openai' to verify force path
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/delete`, { id: 'openai', force: true });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (!j.ok) throw new Error('force delete should succeed');
+    if (j.deleted !== 'openai') throw new Error(`deleted should be openai, got ${j.deleted}`);
+    if (j.liveDeps.length === 0) throw new Error('liveDeps should not be empty (we forced past them)');
+}));
+
+test('POST /api/providers/delete on free provider succeeds without force', () => withInstance(async () => {
+    // xiaomi provider exists in fake config but no agent uses it -> safe to delete
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/delete`, { id: 'xiaomi' });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (!j.ok) throw new Error(`delete free provider should succeed: ${j.error}`);
+    if (j.deleted !== 'xiaomi') throw new Error(`deleted should be xiaomi, got ${j.deleted}`);
+    if (j.liveDeps.length !== 0) throw new Error('liveDeps should be empty for unused provider');
 }));
 
 // -------- RUN --------

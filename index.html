@@ -121,14 +121,18 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       </div>
       <div class="mt">
         <table class="tbl">
-          <tr><th>提供商</th><th>Base URL</th><th>Key</th><th>模型数</th></tr>
+          <tr><th>提供商</th><th>Base URL</th><th>Key</th><th>模型数</th><th>操作</th></tr>
           <tr v-for="p in providers" :key="p.id">
             <td>{{ p.id }}</td>
             <td style="font-size:10px;color:#6e6e73">{{ p.baseUrl }}</td>
             <td style="font-family:monospace">{{ p.key || '-' }}</td>
             <td>{{ p.models.length }}</td>
+            <td style="white-space:nowrap">
+              <button class="btn xs" @click="editProvider(p)" title="编辑">✏️</button>
+              <button class="btn xs dan" @click="deleteProvider(p)" title="删除">🗑️</button>
+            </td>
           </tr>
-          <tr v-if="!providers.length"><td colspan="4" style="text-align:center;padding:8px;color:#86868b">无提供商 — 去「配Key」添加</td></tr>
+          <tr v-if="!providers.length"><td colspan="5" style="text-align:center;padding:8px;color:#86868b">无提供商 — 去「配Key」添加</td></tr>
         </table>
       </div>
     </template>
@@ -509,6 +513,25 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
+  <!-- Modal: 编辑提供商 -->
+  <div v-if="showProviderEdit" class="modal" @click.self="showProviderEdit=false">
+    <div class="mc">
+      <h3>✏️ 编辑提供商 <span style="font-size:12px;color:#6e6e73">{{ providerEdit.id }}</span></h3>
+      <label class="mlabel">Base URL</label>
+      <input v-model="providerEdit.baseUrl" placeholder="https://api.example.com/v1">
+      <label class="mlabel">API Key</label>
+      <input v-model="providerEdit.apiKey" type="password" placeholder="留空则不修改">
+      <label class="mlabel">API 协议</label>
+      <input v-model="providerEdit.api" placeholder="openai-completions / anthropic-messages / ...">
+      <label style="font-size:12px"><input type="checkbox" v-model="providerEdit.authHeader"> 使用 Authorization Header (Bearer)</label>
+      <div v-if="providerEditError" class="mt" style="background:#ffe0e0;border-radius:6px;padding:6px 8px;font-size:11px;color:#a00">{{ providerEditError }}</div>
+      <div class="ma">
+        <button class="btn sec" @click="showProviderEdit=false">取消</button>
+        <button class="btn pri" @click="saveProviderEdit" :disabled="providerEditSaving">保存</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: 保存场景 -->
   <div v-if="showSaveScene" class="modal" @click.self="showSaveScene=false">
     <div class="mc">
@@ -537,6 +560,9 @@ createApp({
     const kf = ref({provider:'',apiKey:'',baseUrl:''}); const kr = ref(null); const kl = ref(false);
     const showCreate = ref(false); const showSaveScene = ref(false);
     const newAgent = ref({id:'',tpl:'comfyui',appId:'',appSecret:''}); const sceneName = ref('');
+    const showProviderEdit = ref(false);
+    const providerEdit = ref({id:'', baseUrl:'', apiKey:'', api:'', authHeader:true});
+    const providerEditError = ref(''); const providerEditSaving = ref(false);
     const fileAgent = ref(''); const fileList = ref([]); const filteredFiles = ref([]);
     const selectedFile = ref(''); const fileContent = ref(null); const fileEditing = ref(false);
     const fileFilter = ref(''); const batchModel = ref('');
@@ -668,6 +694,52 @@ createApp({
         await api('/api/agent/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
         await refresh();showToast('✅ 已删除 '+id);
       }catch(e){showToast('删除失败: '+e.message,'err')}
+    }
+
+    // ---- Provider CRUD ----
+    function editProvider(p){
+      providerEdit.value = {
+        id: p.id,
+        baseUrl: p.baseUrl || '',
+        apiKey: '',                              // never echo current key; leave blank = no change
+        api: p.api || '',
+        authHeader: p.authHeader !== false,
+      };
+      providerEditError.value = '';
+      showProviderEdit.value = true;
+    }
+    async function saveProviderEdit(){
+      providerEditSaving.value = true; providerEditError.value = '';
+      try{
+        const body = { id: providerEdit.value.id, baseUrl: providerEdit.value.baseUrl, authHeader: providerEdit.value.authHeader };
+        if (providerEdit.value.apiKey) body.apiKey = providerEdit.value.apiKey;
+        if (providerEdit.value.api) body.api = providerEdit.value.api;
+        const d = await api('/api/providers/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if (d.ok){ showProviderEdit.value=false; await refresh(); showToast('✅ 提供商已更新'); }
+        else { providerEditError.value = d.error || '更新失败'; }
+      }catch(e){ providerEditError.value = e.message; }
+      finally { providerEditSaving.value = false; }
+    }
+    async function deleteProvider(p){
+      let msg = `确定删除提供商 "${p.id}"？\n\n同时清理该 provider 在 agents.defaults.models 里的所有条目。`;
+      if (p.models && p.models.length) msg += `\n\n它当前有 ${p.models.length} 个模型注册。`;
+      if (!confirm(msg)) return;
+      try{
+        const d = await api('/api/providers/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id: p.id})});
+        if (d.ok){
+          await refresh();
+          showToast(`✅ 已删除 ${p.id}${d.orphansCleaned?` (清理 ${d.orphansCleaned} 个孤儿)`:''}`);
+        } else if (d.needForce){
+          const depList = (d.dependents || []).join('\n  ');
+          if (confirm(`提供商 "${p.id}" 正在被以下 Agent 引用:\n\n  ${depList}\n\n强制删除？\n（删除后这些 Agent 的 model.primary 会变成无效引用，需要手动改）`)) {
+            const d2 = await api('/api/providers/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id: p.id, force: true})});
+            if (d2.ok){ await refresh(); showToast('⚠️ 强制删除 ' + p.id + '，请修复相关 Agent'); }
+            else { showToast('删除失败: '+(d2.error||'unknown'),'err'); }
+          }
+        } else {
+          showToast('删除失败: '+(d.error||'unknown'),'err');
+        }
+      }catch(e){ showToast('删除失败: '+e.message,'err'); }
     }
 
     // Files
@@ -855,6 +927,8 @@ createApp({
       batchModel,uptimeStr,changedCount,groups,short,ws,sz,
       feishu,showFeishuBotModal,feishuBotForm,showAllowFromModal,allowFromId,allowFromScope,feishuDiag,diagFor,
       showGuidedBot,guidedBot,reg,regQrUrl,regMsg,regBotKey,
+      showProviderEdit,providerEdit,providerEditError,providerEditSaving,
+      editProvider,saveProviderEdit,deleteProvider,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
       loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,

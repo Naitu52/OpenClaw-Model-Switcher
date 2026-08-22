@@ -575,6 +575,58 @@ function doPruneOrphans({dryRun=false}={}) {
   return { ok: true, removed: removedKeys.length, removedKeys, dryRun, knownCount: known.size, inUseCount: inUse.size };
 }
 
+// ---- Provider CRUD ----
+// Update mutable fields of an existing provider: apiKey, baseUrl, api, authHeader.
+// Does NOT change id (that would orphan references) or models (use /api/probe to refresh).
+function doUpdateProvider(id, patch) {
+  const c = read();
+  if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found` };
+  const p = c.models.providers[id];
+  const changed = [];
+  for (const f of ['apiKey','baseUrl','api','authHeader']) {
+    if (patch[f] !== undefined) { p[f] = patch[f]; changed.push(f); }
+  }
+  if (!changed.length) return { ok: false, error: 'Nothing to update (no fields provided)' };
+  write(c);
+  log(`Update provider ${id}: ${changed.join(', ')}`);
+  return { ok: true, updated: id, changed };
+}
+
+// Delete a provider config. Safety:
+//   - Refuses if any agent's model.primary starts with `${id}/` (would break live assignment).
+//   - Pass force=true to override (caller takes responsibility for re-pointing agents).
+//   - Always cleans `agents.defaults.models[provider/X]` registry entries (they are
+//     just historical references to a no-longer-existing provider, not live use).
+function doDeleteProvider(id, force=false) {
+  const c = read();
+  if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found` };
+
+  // Find live dependents (would break if deleted)
+  const liveDeps = new Set();
+  if (c.agents?.list) for (const a of c.agents.list) {
+    const p = a?.model?.primary;
+    if (p && p.startsWith(id + '/')) liveDeps.add(p);
+  }
+  if (liveDeps.size && !force) {
+    return { ok: false, error: 'Provider is in use by agents', dependents: [...liveDeps], needForce: true };
+  }
+
+  delete c.models.providers[id];
+
+  // Always clean registry entries (defaults.models) — those are not live references
+  let orphansCleaned = 0;
+  if (c.agents?.defaults?.models) {
+    const prefix = id + '/';
+    for (const key of Object.keys(c.agents.defaults.models)) {
+      if (key.startsWith(prefix)) { delete c.agents.defaults.models[key]; orphansCleaned++; }
+    }
+  }
+
+  write(c);
+  log(`Delete provider ${id} (force=${force}, liveDeps=${liveDeps.size}, orphansCleaned=${orphansCleaned})`);
+  return { ok: true, deleted: id, orphansCleaned, liveDeps: [...liveDeps] };
+}
+
 // ---- HTTP server ----
 
 const srv = http.createServer(async (req,res)=>{
@@ -681,6 +733,8 @@ const srv = http.createServer(async (req,res)=>{
         const dry = !!(b?.dryRun || q.dryRun==='true' || q.dryRun==='1');
         return json(res,doPruneOrphans({dryRun: dry}));
       }
+      if(p==='/api/providers/update') return json(res,doUpdateProvider(b.id,b));
+      if(p==='/api/providers/delete') return json(res,doDeleteProvider(b.id,!!(b?.force||q.force==='true'||q.force==='1')));
       if(p==='/api/rollback') {
         if(!b.path||!fs.existsSync(b.path)) return json(res,{error:'Backup file not found'},400);
         const tmp=CONFIG+'.new';

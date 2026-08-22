@@ -127,6 +127,8 @@ Common (works without CLI):
     POST /api/probe                       # {provider, apiKey, baseUrl?}
     GET  /api/agents/defaults/models/prune?dryRun=true   # safe dry-run (always read-only)
     POST /api/agents/defaults/models/prune               # real cleanup; respects ?dryRun=true or body.dryRun
+    POST /api/providers/update            # {id, baseUrl?, apiKey?, api?, authHeader?}  — patch existing
+    POST /api/providers/delete            # {id, force?}  — refuses if any agent's model.primary uses it
     POST /api/rollback                    # {path: '<backup path>'}
     POST /api/agent/create                # {id, workspaceTemplate, [appId, appSecret]}
     POST /api/agent/delete                # {id}
