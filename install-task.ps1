@@ -28,7 +28,7 @@ if ($existing) {
 # 重建
 try {
     $action = New-ScheduledTaskAction `
-        -Execute "D:\nodejs\node.exe" `
+        -Execute "C:\Program Files\nodejs\node.exe" `
         -Argument "switcher.cjs" `
         -WorkingDirectory "D:\openclaw\workspace\model-switcher"
 
@@ -48,7 +48,7 @@ try {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "OpenClaw Model Switcher v5 - auto start, auto restart on failure" `
+        -Description "OpenClaw Model Switcher v6.3 - auto start, auto restart on failure" `
         -Force | Out-Null
 
     Log "✓ Register-ScheduledTask OK"
