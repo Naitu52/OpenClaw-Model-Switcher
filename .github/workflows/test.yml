@@ -1,0 +1,33 @@
+name: smoke
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+jobs:
+  test:
+    name: node ${{ matrix.node }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['18', '20', '22']
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+
+      - name: Syntax check (catches parse errors fast)
+        run: node -c switcher.cjs
+
+      - name: Run smoke tests
+        run: node test/smoke.js
+        env:
+          # Test on a free port to avoid conflicts
+          SWITCHER_PORT: '2325'
