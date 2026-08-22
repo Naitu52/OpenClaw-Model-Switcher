@@ -39,7 +39,8 @@
     "INSTALL.md",
     "test/smoke.js",
     "scenes.json.example",
-    ".gitignore"
+    ".gitignore",
+    ".github/workflows/test.yml"
   ],
   "preferGlobal": false,
   "private": false,
