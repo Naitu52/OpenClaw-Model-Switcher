@@ -564,10 +564,10 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
         这个 switcher 启用了 Token 认证。从启动它的命令行 (或 .bat 启动器) 里能找到。
       </div>
       <label class="mlabel">Bearer Token</label>
-      <input v-model="showAuthModal.value" placeholder="粘到 SWITCHER_TOKEN" @keyup.enter="showAuthModal.resolve?.(showAuthModal.value); showAuthModal=null" autofocus>
+      <input v-model="authModalData.value" placeholder="粘到 SWITCHER_TOKEN" @keyup.enter="confirmAuthToken" autofocus>
       <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
-        <button class="btn sec" @click="showAuthModal.reject?.(); showAuthModal=null">取消</button>
-        <button class="btn pri" @click="showAuthModal.resolve?.(showAuthModal.value); showAuthModal=null" :disabled="!showAuthModal.value">确认</button>
+        <button class="btn sec" @click="cancelAuthToken">取消</button>
+        <button class="btn pri" @click="confirmAuthToken" :disabled="!authModalData.value">确认</button>
       </div>
     </div>
   </div>
@@ -577,7 +577,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     <div class="mc">
       <h3>🤖 新建 Agent</h3>
       <label class="mlabel">Agent ID *</label>
-      <input v-model="newAgent.id" placeholder="mybot (英文字母开头)">
+      <input v-model="newAgent.id" placeholder="mybot (英文字母开头)" ref="newAgentIdInput" autocomplete="off">
       <label class="mlabel">模板</label>
       <select v-model="newAgent.tpl">
         <option value="comfyui">comfyui (画图)</option>
@@ -591,7 +591,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <input v-model="newAgent.appSecret" type="password" placeholder="完整 Secret">
       <div class="ma">
         <button class="btn sec" @click="showCreate=false">取消</button>
-        <button class="btn pri" @click="createAgent" :disabled="!newAgent.id">创建</button>
+        <button class="btn pri" @click="createAgent">创建</button>
       </div>
     </div>
   </div>
@@ -741,6 +741,10 @@ createApp({
     }
     applyTheme();
     const showAuthModal = ref(false);
+    // authModalData is a separate ref (instead of stuffing the data on showAuthModal)
+    // so the template can close the modal by just setting showAuthModal=false
+    // without losing the resolve/reject functions. Prevents a stuck modal.
+    const authModalData = ref({resolve:null, reject:null, value:''});
     const authRequired = ref(false);  // becomes true if server demands auth
     function setAuthToken(t) {
       authToken.value = t || '';
@@ -748,11 +752,26 @@ createApp({
       else localStorage.removeItem('switcher_token');
     }
     async function askToken() {
-      // Returns a promise that resolves when user enters a valid token
-      // (or rejects if they cancel).
       return new Promise((resolve, reject) => {
-        showAuthModal.value = {resolve, reject, value: ''};
+        authModalData.value = {resolve, reject, value: ''};
+        showAuthModal.value = true;
       });
+    }
+    function confirmAuthToken() {
+      const d = authModalData.value;
+      if (!d.value) return;
+      const r = d.resolve;  // capture before nulling
+      showAuthModal.value = false;
+      d.resolve = null; d.reject = null;  // prevent double-call
+      r(d.value);
+    }
+    function cancelAuthToken() {
+      const d = authModalData.value;
+      if (!d.reject) return;
+      const rej = d.reject;
+      showAuthModal.value = false;
+      d.resolve = null; d.reject = null;
+      rej();
     }
     async function api(path, opts = {}) {
       const headers = Object.assign({}, opts.headers || {});
@@ -846,9 +865,23 @@ createApp({
     }
 
     async function createAgent(){
+      // Validate first so the click always does something visible (no more "dead
+      // button" when the user just didn't fill the ID).
+      const id = (newAgent.value.id || '').trim();
+      if (!id) {
+        showToast('请先填 Agent ID (英文字母开头, 2-30 字符)', 'err');
+        // Focus the input so they can type immediately
+        const el = document.querySelector('.mc input[ref="newAgentIdInput"], .mc input');
+        if (el) el.focus();
+        return;
+      }
+      if (!/^[a-zA-Z][a-zA-Z0-9_-]{1,30}$/.test(id)) {
+        showToast('Agent ID 格式错: 英文开头, 2-30 字符 (字母/数字/下划线/连字符)', 'err');
+        return;
+      }
       try{
-        const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...newAgent.value,workspaceTemplate:newAgent.value.tpl})});
-        if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent 创建成功')}
+        const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, tpl:newAgent.value.tpl, appId:newAgent.value.appId, appSecret:newAgent.value.appSecret, workspaceTemplate:newAgent.value.tpl})});
+        if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent '+id+' 创建成功')}
         else{showToast('创建失败: '+(d.error||'unknown'),'err')}
       }catch(e){showToast('创建失败: '+e.message,'err')}
     }
@@ -1125,7 +1158,7 @@ createApp({
       showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,
       editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
       confirmDialog,askConfirm,
-      authToken,showAuthModal,setAuthToken,
+      authToken,showAuthModal,authModalData,setAuthToken,confirmAuthToken,cancelAuthToken,
       theme,toggleTheme,modelFilter,filteredGroups,
       refresh,apply,batchApply,resetSelection,probe,createAgent,deleteAgent,
       loadFiles,filterFiles,loadFileContent,saveFile,
