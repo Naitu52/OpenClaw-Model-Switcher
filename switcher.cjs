@@ -314,14 +314,67 @@ function ts() {
 }
 function log(m) { const l=`[${ts()}] ${m}`; try { fs.appendFileSync(LOG,l+'\n'); } catch {} console.log(l); }
 function read() { return JSON.parse(fs.readFileSync(CONFIG,'utf8')); }
+
+// ---- Write lock + backup debounce ----
+// All mutations to openclaw.json route through mutate(fn) so concurrent
+// requests can't race (read-modify-write was unprotected before). Each
+// mutation runs strictly serially.
+let writeChain = Promise.resolve();
+let lastBackupAt = 0;
+const BACKUP_DEBOUNCE_MS = 3000;  // skip backup if last backup was within 3s
+async function mutate(fn) {
+  const prev = writeChain;
+  let release;
+  writeChain = new Promise(r => { release = r; });
+  try {
+    await prev;             // wait for any in-flight write to finish
+    const cfg = read();
+    const result = await fn(cfg);
+    write(cfg);
+    return result;
+  } finally {
+    release();
+  }
+}
+
 function write(cfg) {
   const tmp=CONFIG+'.new';
   fs.writeFileSync(tmp,JSON.stringify(cfg,null,2),'utf8');
   fs.renameSync(tmp,CONFIG);
   if(!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR,{recursive:true});
-  const bak=path.join(BACKUP_DIR,`openclaw-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
-  try { fs.copyFileSync(CONFIG,bak); } catch(e) {}
+  // Debounce: skip backup if one was made very recently (avoids 3 backups
+  // for a doSwitch+doProbe+doUpdate sequence within a second).
+  const now = Date.now();
+  if (now - lastBackupAt > BACKUP_DEBOUNCE_MS) {
+    const bak=path.join(BACKUP_DIR,`openclaw-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
+    try { fs.copyFileSync(CONFIG,bak); lastBackupAt = now; } catch(e) {}
+  }
   try { fs.readdirSync(BACKUP_DIR).filter(x=>x.endsWith('.json')).sort().reverse().slice(30).forEach(f=>fs.unlinkSync(path.join(BACKUP_DIR,f))); } catch(e) {}
+}
+
+// ---- Error codes (stable, machine-readable) ----
+const E = {
+  NOT_FOUND: 'NOT_FOUND',
+  IN_USE: 'IN_USE',
+  INVALID_ID: 'INVALID_ID',
+  MISSING_FIELD: 'MISSING_FIELD',
+  INVALID_FIELD: 'INVALID_FIELD',
+  CLI_MISSING: 'CLI_MISSING',
+  FEISHU_MISSING: 'FEISHU_MISSING',
+  PROBE_FAILED: 'PROBE_FAILED',
+  IO_ERROR: 'IO_ERROR',
+  PATH_DENIED: 'PATH_DENIED',
+};
+function err(res, code, message, http=400, extra={}) {
+  return json(res, { ok: false, error: message, code, ...extra }, http);
+}
+
+// ---- Validation helpers ----
+function validateAgentId(id) {
+  return typeof id === 'string' && /^[a-zA-Z][a-zA-Z0-9_-]{1,30}$/.test(id);
+}
+function validateProviderId(id) {
+  return typeof id === 'string' && /^[a-zA-Z0-9._-]{1,30}$/.test(id);
 }
 
 function json(res,data,code=200) {
@@ -454,19 +507,64 @@ function getStatus() {
 }
 
 function doSwitch(changes) {
-  const c=read(); const list=c.agents?.list||[];
-  const log_entries=[];
-  Object.entries(changes).forEach(([id,nm])=>{
-    const e=list.find(a=>a.id===id); if(!e) return;
-    const old = e.model?.primary || '(inherit)';
-    if(!e.model) e.model={};
-    e.model.primary=nm;
-    if(!c.agents.defaults.models) c.agents.defaults.models={};
-    if(!c.agents.defaults.models[nm]) c.agents.defaults.models[nm]={};
-    log_entries.push(`${id}: ${old} → ${nm}`);
+  return mutate((c) => {
+    const list = c.agents?.list || [];
+    const log_entries = [];
+    Object.entries(changes).forEach(([id,nm]) => {
+      const e = list.find(a => a.id === id); if (!e) return;
+      const old = e.model?.primary || '(inherit)';
+      if (!e.model) e.model = {};
+      e.model.primary = nm;
+      if (!c.agents.defaults.models) c.agents.defaults.models = {};
+      if (!c.agents.defaults.models[nm]) c.agents.defaults.models[nm] = {};
+      log_entries.push(`${id}: ${old} → ${nm}`);
+    });
+    return log_entries;
+  }).then(log_entries => {
+    if (log_entries.length) log(`Switch: ${log_entries.join(' | ')}`);
+    return log_entries.length;
   });
-  if(log_entries.length) { write(c); log(`Switch: ${log_entries.join(' | ')}`); }
-  return log_entries.length;
+}
+
+// Shared: apply a fresh probe result + auto-prune. Called by both doProbe
+// (with the same provider's apiKey/baseUrl) and refreshOneProviderFast
+// (which reuses the stored baseUrl/apiKey from the existing config).
+// All writes go through mutate() so concurrent refresh/probe/etc. serialize.
+async function applyProbeResult(providerId, modelList, baseUrl, apiKey) {
+  return mutate((c) => {
+    if (!c.models) c.models = { mode: 'merge', providers: {} };
+    if (!c.models.providers) c.models.providers = {};
+    c.models.providers[providerId] = {
+      baseUrl: baseUrl,
+      apiKey: apiKey,
+      api: 'openai-completions',
+      authHeader: true,
+      models: modelList.map(m => ({ id: m.id, name: m.id, input: ['text'], contextWindow: 128000, maxTokens: 8192 })),
+    };
+    if (!c.agents.defaults.models) c.agents.defaults.models = {};
+    for (const m of modelList) {
+      const key = `${providerId}/${m.id}`;
+      if (!c.agents.defaults.models[key]) c.agents.defaults.models[key] = {};
+    }
+    // Auto-prune stale agents.defaults.models[provider/*] entries: a key is
+    // an orphan if X is no longer in the freshly-probed list AND no agent's
+    // model.primary uses it. probe() is thus a real-time read.
+    const probedIds = new Set(modelList.map(m => m.id));
+    const keepByAgent = new Set();
+    if (c.agents.list) for (const a of c.agents.list) {
+      const p = a?.model?.primary;
+      if (p && p.startsWith(providerId + '/')) keepByAgent.add(p);
+    }
+    const prefix = providerId + '/';
+    let removed = 0;
+    for (const key of Object.keys(c.agents.defaults.models)) {
+      if (!key.startsWith(prefix)) continue;
+      if (keepByAgent.has(key)) continue;
+      const id = key.slice(prefix.length);
+      if (!probedIds.has(id)) { delete c.agents.defaults.models[key]; removed++; }
+    }
+    return { count: modelList.length, removed };
+  });
 }
 
 async function doProbe(provider,apiKey,baseUrl) {
@@ -489,48 +587,14 @@ async function doProbe(provider,apiKey,baseUrl) {
       } else { data = await resp.json(); }
       const raw = data.data || data;
       if(!Array.isArray(raw)||!raw.length) continue;
-      const models = raw.map(m=>({id:m.id,key:`${provider}/${m.id}`}));
-      const c=read();
-      if(!c.models) c.models={mode:'merge',providers:{}};
-      if(!c.models.providers) c.models.providers={};
-      c.models.providers[provider] = {
-        baseUrl:baseUrl.replace(/\/v1\/models$/,'').replace(/\/models$/,''),
-        apiKey, api:'openai-completions', authHeader:true,
-        models:models.map(m=>({id:m.id,name:m.id,input:['text'],contextWindow:128000,maxTokens:8192}))
-      };
-      if(!c.agents.defaults.models) c.agents.defaults.models={};
-      models.forEach(m=>{if(!c.agents.defaults.models[m.key])c.agents.defaults.models[m.key]={};});
-
-      // ---- auto-prune orphans for this provider in agents.defaults.models ----
-      // A key `${provider}/X` is an orphan if X is no longer in the freshly-probed
-      // model list, AND no agent currently uses it as `model.primary`. This makes
-      // probe() a real-time read: every successful probe reconciles.
-      {
-        const probedIds = new Set(models.map(m => m.id));
-        const keepByAgent = new Set();
-        if (c.agents.list) for (const a of c.agents.list) {
-          const p = a?.model?.primary;
-          if (p && p.startsWith(provider + '/')) keepByAgent.add(p);
-        }
-        const prefix = provider + '/';
-        let removed = 0;
-        for (const key of Object.keys(c.agents.defaults.models)) {
-          if (!key.startsWith(prefix)) continue;
-          if (keepByAgent.has(key)) continue;
-          const id = key.slice(prefix.length);
-          if (!probedIds.has(id)) {
-            delete c.agents.defaults.models[key];
-            removed++;
-          }
-        }
-        if (removed) log(`Probe ${provider}: pruned ${removed} orphan(s) from agents.defaults.models`);
-      }
-
-      write(c); log(`Probe ${provider}: ${models.length} models via ${probeUrl}`);
-      return {ok:true,count:models.length,models};
+      const modelList = raw.map(m => ({ id: m.id }));
+      const r = await applyProbeResult(provider, modelList, baseUrl, apiKey);
+      if (r.removed) log(`Probe ${provider}: pruned ${r.removed} orphan(s) from agents.defaults.models`);
+      log(`Probe ${provider}: ${r.count} models via ${probeUrl}`);
+      return { ok: true, count: r.count, models: modelList.map(m => ({ id: m.id, key: `${provider}/${m.id}` })) };
     } catch(e) { continue; }
   }
-  return {ok:false,error:`All probe URLs failed for ${provider}`};
+  return { ok: false, error: `All probe URLs failed for ${provider}`, code: E.PROBE_FAILED };
 }
 
 // ---- Orphan pruning (global, no API call needed) ----
@@ -539,54 +603,64 @@ async function doProbe(provider,apiKey,baseUrl) {
 //   - AND NOT present in any models.providers[*].models[*].id
 // In-use keys (e.g. minimax/MiniMax-M3) are kept even if no provider has them
 // (handles remote-only models registered outside the switcher).
-function doPruneOrphans({dryRun=false}={}) {
-  const c = read();
-  if (!c.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys: [] };
+async function doPruneOrphans({dryRun=false}={}) {
+  // For both dry-run and real, the read+analyze is the same. The actual
+  // delete + write is the part that goes through mutate() for safety.
+  const scan = read();
+  if (!scan.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys: [], dryRun, knownCount: 0, inUseCount: 0 };
 
-  // Ground truth: any model id listed under any provider
   const known = new Set();
-  if (c.models?.providers) {
-    for (const [pid, p] of Object.entries(c.models.providers)) {
+  if (scan.models?.providers) {
+    for (const [pid, p] of Object.entries(scan.models.providers)) {
       for (const m of (p.models || [])) {
         if (m?.id) known.add(`${pid}/${m.id}`);
       }
     }
   }
-  // In-use set: any agent's model.primary
   const inUse = new Set();
-  if (c.agents?.list) for (const a of c.agents.list) {
+  if (scan.agents?.list) for (const a of scan.agents.list) {
     if (a?.model?.primary) inUse.add(a.model.primary);
   }
 
   const removedKeys = [];
-  for (const key of Object.keys(c.agents.defaults.models)) {
+  for (const key of Object.keys(scan.agents.defaults.models)) {
     if (inUse.has(key)) continue;
     if (known.has(key)) continue;
     removedKeys.push(key);
   }
-  if (!dryRun && removedKeys.length) {
-    for (const k of removedKeys) delete c.agents.defaults.models[k];
-    write(c);
-    log(`Prune orphans: removed ${removedKeys.length} (${removedKeys.join(', ')})`);
+  if (dryRun || !removedKeys.length) {
+    return { ok: true, removed: removedKeys.length, removedKeys, dryRun, knownCount: known.size, inUseCount: inUse.size };
   }
-  return { ok: true, removed: removedKeys.length, removedKeys, dryRun, knownCount: known.size, inUseCount: inUse.size };
+  // Real delete — go through mutate() for write serialization
+  return mutate((c) => {
+    if (!c.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys };
+    for (const k of removedKeys) delete c.agents.defaults.models[k];
+    return { ok: true, removed: removedKeys.length, removedKeys, dryRun: false, knownCount: known.size, inUseCount: inUse.size };
+  }).then(r => {
+    if (r.ok && r.removed) log(`Prune orphans: removed ${r.removed} (${r.removedKeys.join(', ')})`);
+    return r;
+  });
 }
 
 // ---- Provider CRUD ----
 // Update mutable fields of an existing provider: apiKey, baseUrl, api, authHeader.
 // Does NOT change id (that would orphan references) or models (use /api/probe to refresh).
-function doUpdateProvider(id, patch) {
-  const c = read();
-  if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found` };
-  const p = c.models.providers[id];
-  const changed = [];
-  for (const f of ['apiKey','baseUrl','api','authHeader']) {
-    if (patch[f] !== undefined) { p[f] = patch[f]; changed.push(f); }
-  }
-  if (!changed.length) return { ok: false, error: 'Nothing to update (no fields provided)' };
-  write(c);
-  log(`Update provider ${id}: ${changed.join(', ')}`);
-  return { ok: true, updated: id, changed };
+async function doUpdateProvider(id, patch) {
+  if (!validateProviderId(id)) return { ok: false, error: `Invalid provider id`, code: E.INVALID_ID };
+  if (!patch || typeof patch !== 'object') return { ok: false, error: 'Body must be JSON object', code: E.INVALID_FIELD };
+  return mutate((c) => {
+    if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found`, code: E.NOT_FOUND };
+    const p = c.models.providers[id];
+    const changed = [];
+    for (const f of ['apiKey','baseUrl','api','authHeader']) {
+      if (patch[f] !== undefined) { p[f] = patch[f]; changed.push(f); }
+    }
+    if (!changed.length) return { ok: false, error: 'Nothing to update (no fields provided)', code: E.MISSING_FIELD };
+    return { ok: true, updated: id, changed };
+  }).then(r => {
+    if (r.ok) log(`Update provider ${id}: ${r.changed.join(', ')}`);
+    return r;
+  });
 }
 
 // Delete a provider config. Safety:
@@ -594,34 +668,30 @@ function doUpdateProvider(id, patch) {
 //   - Pass force=true to override (caller takes responsibility for re-pointing agents).
 //   - Always cleans `agents.defaults.models[provider/X]` registry entries (they are
 //     just historical references to a no-longer-existing provider, not live use).
-function doDeleteProvider(id, force=false) {
-  const c = read();
-  if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found` };
-
-  // Find live dependents (would break if deleted)
-  const liveDeps = new Set();
-  if (c.agents?.list) for (const a of c.agents.list) {
-    const p = a?.model?.primary;
-    if (p && p.startsWith(id + '/')) liveDeps.add(p);
-  }
-  if (liveDeps.size && !force) {
-    return { ok: false, error: 'Provider is in use by agents', dependents: [...liveDeps], needForce: true };
-  }
-
-  delete c.models.providers[id];
-
-  // Always clean registry entries (defaults.models) — those are not live references
-  let orphansCleaned = 0;
-  if (c.agents?.defaults?.models) {
-    const prefix = id + '/';
-    for (const key of Object.keys(c.agents.defaults.models)) {
-      if (key.startsWith(prefix)) { delete c.agents.defaults.models[key]; orphansCleaned++; }
+async function doDeleteProvider(id, force=false) {
+  if (!validateProviderId(id)) return { ok: false, error: `Invalid provider id`, code: E.INVALID_ID };
+  const result = await mutate((c) => {
+    if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found`, code: E.NOT_FOUND };
+    const liveDeps = new Set();
+    if (c.agents?.list) for (const a of c.agents.list) {
+      const p = a?.model?.primary;
+      if (p && p.startsWith(id + '/')) liveDeps.add(p);
     }
-  }
-
-  write(c);
-  log(`Delete provider ${id} (force=${force}, liveDeps=${liveDeps.size}, orphansCleaned=${orphansCleaned})`);
-  return { ok: true, deleted: id, orphansCleaned, liveDeps: [...liveDeps] };
+    if (liveDeps.size && !force) {
+      return { ok: false, error: 'Provider is in use by agents', dependents: [...liveDeps], needForce: true, code: E.IN_USE };
+    }
+    delete c.models.providers[id];
+    let orphansCleaned = 0;
+    if (c.agents?.defaults?.models) {
+      const prefix = id + '/';
+      for (const key of Object.keys(c.agents.defaults.models)) {
+        if (key.startsWith(prefix)) { delete c.agents.defaults.models[key]; orphansCleaned++; }
+      }
+    }
+    return { ok: true, deleted: id, orphansCleaned, liveDeps: [...liveDeps] };
+  });
+  if (result.ok) log(`Delete provider ${id} (force=${force}, liveDeps=${result.liveDeps.length}, orphansCleaned=${result.orphansCleaned})`);
+  return result;
 }
 
 // Single-URL fast refresh for one provider. Used by doRefreshAllProviders to
@@ -648,37 +718,11 @@ async function refreshOneProviderFast(id, p, perAttemptMs = 3000) {
     const raw = data.data || data;
     if (!Array.isArray(raw) || !raw.length) return { provider: id, ok: false, error: 'empty model list', elapsedMs: Date.now() - t0 };
 
-    // Update config (replaces provider.models wholesale) + auto-prune stale
-    // agents.defaults.models[provider/*] entries. Mirrors doProbe's v6.3.0
-    // behavior so refresh-all is a full re-sync across all providers.
-    const c = read();
-    if (!c.models) c.models = { mode: 'merge', providers: {} };
-    if (!c.models.providers) c.models.providers = {};
-    c.models.providers[id] = {
-      baseUrl: p.baseUrl,
-      apiKey: p.apiKey,
-      api: 'openai-completions',
-      authHeader: true,
-      models: raw.map(m => ({ id: m.id, name: m.id, input: ['text'], contextWindow: 128000, maxTokens: 8192 })),
-    };
-    if (!c.agents.defaults.models) c.agents.defaults.models = {};
-    const probedIds = new Set(raw.map(m => m.id));
-    const keepByAgent = new Set();
-    if (c.agents.list) for (const a of c.agents.list) {
-      const primary = a?.model?.primary;
-      if (primary && primary.startsWith(id + '/')) keepByAgent.add(primary);
-    }
-    const prefix = id + '/';
-    let removed = 0;
-    for (const key of Object.keys(c.agents.defaults.models)) {
-      if (!key.startsWith(prefix)) continue;
-      if (keepByAgent.has(key)) continue;
-      const xid = key.slice(prefix.length);
-      if (!probedIds.has(xid)) { delete c.agents.defaults.models[key]; removed++; }
-    }
-    write(c);
-    log(`Refresh ${id}: ${raw.length} models (pruned ${removed})`);
-    return { provider: id, ok: true, count: raw.length, removed, elapsedMs: Date.now() - t0 };
+    // Use the shared apply path so refresh-all and single-probe behave identically.
+    const modelList = raw.map(m => ({ id: m.id }));
+    const r = await applyProbeResult(id, modelList, p.baseUrl, p.apiKey);
+    log(`Refresh ${id}: ${r.count} models (pruned ${r.removed})`);
+    return { provider: id, ok: true, count: r.count, removed: r.removed, elapsedMs: Date.now() - t0 };
   } catch (e) {
     return { provider: id, ok: false, error: e.message, elapsedMs: Date.now() - t0 };
   }
@@ -790,7 +834,7 @@ const srv = http.createServer(async (req,res)=>{
       return json(res,{content:fs.readFileSync(fp,'utf8'),size:stat.size,modified:stat.mtime.toISOString()});
     }
     // GET prune is always dryRun (safe for browser)
-    if(method==='GET'&&p==='/api/agents/defaults/models/prune') return json(res,doPruneOrphans({dryRun:true}));
+    if(method==='GET'&&p==='/api/agents/defaults/models/prune') return json(res,await doPruneOrphans({dryRun:true}));
 
     // POST
     if(method==='POST') {
@@ -798,17 +842,17 @@ const srv = http.createServer(async (req,res)=>{
       try { b=await body(req); } catch(e) { b = {}; }
 
       if(p==='/api/switch') {
-        const n=doSwitch(b.changes||{});
+        const n=await doSwitch(b.changes||{});
         return json(res,{status:'ok',changed:n});
       }
       if(p==='/api/probe') return json(res,await doProbe(b.provider,b.apiKey,b.baseUrl||''));
       // POST prune: opt-in to dryRun via body.dryRun or ?dryRun=true. Empty body = real prune.
       if(p==='/api/agents/defaults/models/prune') {
         const dry = !!(b?.dryRun || q.dryRun==='true' || q.dryRun==='1');
-        return json(res,doPruneOrphans({dryRun: dry}));
+        return json(res,await doPruneOrphans({dryRun: dry}));
       }
-      if(p==='/api/providers/update') return json(res,doUpdateProvider(b.id,b));
-      if(p==='/api/providers/delete') return json(res,doDeleteProvider(b.id,!!(b?.force||q.force==='true'||q.force==='1')));
+      if(p==='/api/providers/update') return json(res,await doUpdateProvider(b.id,b));
+      if(p==='/api/providers/delete') return json(res,await doDeleteProvider(b.id,!!(b?.force||q.force==='true'||q.force==='1')));
       if(p==='/api/providers/refresh-all') return json(res,await doRefreshAllProviders());
       if(p==='/api/rollback') {
         if(!b.path||!fs.existsSync(b.path)) return json(res,{error:'Backup file not found'},400);
