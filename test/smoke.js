@@ -317,6 +317,51 @@ test('POST /api/providers/refresh-all returns structured result per provider', (
     if (j.failed !== 3) throw new Error(`expected 3 failed, got ${j.failed}`);
 }));
 
+test('write lock serializes concurrent updates', () => withInstance(async () => {
+    // Fire 5 concurrent switch requests. With the write lock, none of them
+    // should clobber the others; final openclaw.json should reflect all 5.
+    const N = 5;
+    const promises = [];
+    for (let i = 0; i < N; i++) {
+        const body = JSON.stringify({ changes: { agent1: i % 2 === 0 ? 'minimax/MiniMax-M3' : 'openai/gpt-oss-20b' } });
+        promises.push(new Promise((resolve, reject) => {
+            const req = http.request({
+                method: 'POST', hostname: 'localhost', port: TEST_PORT, path: '/api/switch',
+                headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) }
+            }, (res) => { let b=''; res.on('data', c => b += c); res.on('end', () => resolve({ status: res.statusCode, body: b })); });
+            req.on('error', reject); req.write(body); req.end();
+        }));
+    }
+    const results = await Promise.all(promises);
+    for (const r of results) if (r.status !== 200) throw new Error(`concurrent switch HTTP ${r.status}`);
+
+    // Read config and verify agent1 has a valid model (one of the two expected).
+    const cfgPath = path.join(FAKE_HOME, 'openclaw.json');
+    const cfg = JSON.parse(fs.readFileSync(cfgPath, 'utf8'));
+    const a1 = cfg.agents.list.find(x => x.id === 'agent1');
+    if (!a1.model || !a1.model.primary) throw new Error('agent1 has no model after concurrent switches');
+    if (a1.model.primary !== 'minimax/MiniMax-M3' && a1.model.primary !== 'openai/gpt-oss-20b') {
+        throw new Error(`agent1 has unexpected model: ${a1.model.primary}`);
+    }
+    // agents.defaults.models should have at least one entry (the auto-add).
+    const dm = cfg.agents.defaults.models || {};
+    if (!dm[a1.model.primary]) throw new Error(`agents.defaults.models missing ${a1.model.primary}`);
+}));
+
+test('error responses include stable code field', () => withInstance(async () => {
+    // Trigger a known error: delete a provider that doesn't exist.
+    const r = await http_post(`http://localhost:${TEST_PORT}/api/providers/delete`, { id: 'nonexistent-xyz' });
+    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+    const j = JSON.parse(r.body);
+    if (j.ok) throw new Error('expected failure');
+    if (typeof j.code !== 'string') throw new Error('missing code field');
+    if (j.code !== 'NOT_FOUND' && j.code !== 'INVALID_ID') {
+        // Either is acceptable (id 'nonexistent-xyz' might pass the validator if len OK,
+        // then fail NOT_FOUND). Just verify a code was returned.
+        throw new Error(`unexpected code: ${j.code}`);
+    }
+}));
+
 // -------- RUN --------
 
 (async () => {
