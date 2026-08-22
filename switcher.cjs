@@ -1099,10 +1099,13 @@ const srv = http.createServer(async (req,res)=>{
           const raw=JSON.parse(sp.stdout);
           if(!raw.device_code) throw new Error('Feishu 未返回 device_code: '+sp.stdout.slice(0,200));
           const verificationUri='https://accounts.feishu.cn/oauth/v1/app/registration';
-          // 固定 QR 指向飞书 launcher 页（由用户手动输 user_code）
+          // Prefer the API-supplied verification_uri_complete (already has
+          // user_code embedded in the path). Fall back to manual construction
+          // with ?session=USERCODE if Feishu doesn't return it.
           const domain=b.domain||'feishu';
           const baseUrl=domain==='lark'?'https://open.larksuite.com':'https://open.feishu.cn';
-          const qrUrl=`${baseUrl}/page/launcher?from=oc_onboard&tp=ob_cli_app`;
+          const qrUrl = raw.verification_uri_complete
+            || `${baseUrl}/page/launcher?from=oc_onboard&tp=ob_cli_app&session=${encodeURIComponent(raw.user_code||'')}`;
           regSessions.set(raw.device_code,{deviceCode:raw.device_code,interval:raw.interval||5,expireIn:raw.expire_in||600,startedAt:Date.now(),result:null});
           log(`Feishu register begin: device=${raw.device_code.slice(0,15)}...`);
           return json(res,{ok:true,sessionId:raw.device_code,qrUrl,userCode:raw.user_code,interval:raw.interval||5,expireIn:raw.expire_in||600,verificationUri});
