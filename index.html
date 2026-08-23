@@ -114,7 +114,13 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
 
   <!-- Header -->
-  <div class="f" style="justify-content:space-between">
+  <!-- DEBUG OVERLAY: massive red banner so you can SEE showCreate state at a glance -->
+  <div style="position:fixed;top:0;left:0;right:0;background:#ff0;color:#000;padding:6px 12px;font-size:14px;font-weight:bold;z-index:99999;border-bottom:3px solid #c00">
+    🔧 DEBUG: showCreate = <span v-show="showCreate" style="background:#0a0;color:#fff;padding:0 8px">TRUE</span><span v-show="!showCreate" style="background:#888;color:#fff;padding:0 8px">FALSE</span>
+    &nbsp;|&nbsp; <a @click="forceOpenCreate" style="color:#00c;cursor:pointer;text-decoration:underline">forceOpen</a> &nbsp; <a @click="forceCloseCreate" style="color:#00c;cursor:pointer;text-decoration:underline">forceClose</a>
+  </div>
+
+  <div class="f" style="justify-content:space-between;margin-top:24px">
     <div>
       <div class="h1">🐾 Model Switcher <span v-if="authRequired" title="Server requires bearer token" style="font-size:13px;color:#d33;margin-left:6px">🔐</span></div>
       <div class="sub">
@@ -572,8 +578,8 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
-  <!-- Modal: 新建Agent -->
-  <div v-if="showCreate" class="modal" @click.self="showCreate=false" style="z-index:200;background:rgba(0,0,0,0.6)">
+  <!-- Modal: 新建Agent (v-show because v-if wasn't rendering in user's env) -->
+  <div v-show="showCreate" class="modal" @click.self="showCreate=false" style="z-index:200;background:rgba(0,0,0,0.6)">
     <div class="mc" style="min-width:400px;border:3px solid #0071e3">
       <h3 style="margin-top:0;font-size:18px">🤖 新建 Agent (TEST MODAL — 如果你看到这行, 模态确实在显示)</h3>
       <label class="mlabel">Agent ID *</label>
@@ -871,7 +877,7 @@ createApp({
       newAgent.value = {id:'',tpl:'comfyui',appId:'',appSecret:''};
       showCreate.value = true;
       if (typeof window !== 'undefined' && window.console) console.log('[openCreate] showCreate after=', showCreate.value);
-      // After Vue's next tick, check what the DOM actually contains.
+      // After Vue's nextTick, check what the DOM actually contains.
       if (typeof window !== 'undefined') {
         Promise.resolve().then(() => {
           const m = document.querySelector('.modal');
@@ -885,6 +891,10 @@ createApp({
         });
       }
     }
+
+    // Debug helpers exposed in the template + via window.__dbg
+    function forceOpenCreate() { showCreate.value = true; console.log('[forceOpenCreate] set true'); }
+    function forceCloseCreate() { showCreate.value = false; console.log('[forceCloseCreate] set false'); }
 
     async function createAgent(){
       // Validate first so the click always does something visible (no more "dead
@@ -1195,7 +1205,7 @@ createApp({
       window.__dbg = {
         showCreate, newAgent, providers, agents, status, authRequired, authToken,
         showCreate, showAuthModal, showProviderEdit, showSaveScene, showFeishuBotModal, showGuidedBot,
-        openCreate, createAgent,
+        openCreate, createAgent, forceOpenCreate, forceCloseCreate,
         modals: () => {
           const m = document.querySelectorAll('.modal');
           return Array.from(m).map(el => ({
@@ -1216,6 +1226,7 @@ createApp({
         },
         forceOpen: () => { showCreate.value = true; console.log('[__dbg] forced showCreate=true'); },
         forceClose: () => { showCreate.value = false; console.log('[__dbg] forced showCreate=false'); },
+        dumpBody: () => { console.log('[__dbg.dumpBody] body.innerHTML (first 4000 chars):', document.body.innerHTML.slice(0, 4000)); },
       };
 
       // Watch ref state changes for diagnostic logging
