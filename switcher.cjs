@@ -934,6 +934,7 @@ function getBackups(all) {
 
 // #5/#6: scenes 读取失败不静默丢数据——坏文件备份 + 抛错让调用方拒绝写；
 // 写入一律 tmp+rename 原子化（与主 config 一致）。
+// 注意：文件不存在（首次使用/用户没建过场景）是正常情况，返回空数组，不算损坏。
 function getScenesOrThrow() {
   const raw = fs.readFileSync(SCENES,'utf8');
   return JSON.parse(raw);
@@ -941,6 +942,7 @@ function getScenesOrThrow() {
 function readScenes() {
   try { return { ok:true, scenes: getScenesOrThrow() }; }
   catch(e) {
+    if (e && e.code === 'ENOENT') return { ok:true, scenes: [] };   // 文件不存在 = 空场景，正常
     // 备份坏文件，防止后续基于空数组覆盖导致旧场景全丢
     try {
       const bak = `${SCENES}.corrupt-${new Date().toISOString().replace(/[:.]/g,'-')}`;
