@@ -1,6 +1,6 @@
 {
   "name": "openclaw-model-switcher",
-  "version": "6.4.8",
+  "version": "6.4.9",
   "description": "Portable web UI for managing OpenClaw agents, models, providers, and Feishu bot bindings. Cross-platform, env-var configured, runs anywhere Node.js runs. Includes local Vue bundle (no CDN) and 📂 open-folder button.",
   "main": "switcher.cjs",
   "scripts": {

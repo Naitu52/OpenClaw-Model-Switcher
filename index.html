@@ -115,12 +115,6 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
 
   <!-- Header -->
-  <!-- DEBUG OVERLAY: massive red banner so you can SEE showCreate state at a glance -->
-  <div style="position:fixed;top:0;left:0;right:0;background:#ff0;color:#000;padding:6px 12px;font-size:14px;font-weight:bold;z-index:99999;border-bottom:3px solid #c00">
-    🔧 DEBUG: showCreate = <span v-show="showCreate" style="background:#0a0;color:#fff;padding:0 8px">TRUE</span><span v-show="!showCreate" style="background:#888;color:#fff;padding:0 8px">FALSE</span>
-    &nbsp;|&nbsp; <a @click="forceOpenCreate" style="color:#00c;cursor:pointer;text-decoration:underline">forceOpen</a> &nbsp; <a @click="forceCloseCreate" style="color:#00c;cursor:pointer;text-decoration:underline">forceClose</a>
-  </div>
-
   <div class="f" style="justify-content:space-between;margin-top:24px">
     <div>
       <div class="h1">🐾 Model Switcher <span v-if="authRequired" title="Server requires bearer token" style="font-size:13px;color:#d33;margin-left:6px">🔐</span></div>
@@ -579,10 +573,10 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
-  <!-- Modal: 新建Agent (class-based, NOT v-if/v-show — those failed in user's env) -->
-  <div :class="showCreate ? 'modal modal-open' : 'modal'" @click.self="showCreate=false" data-modal="create" style="z-index:200;background:rgba(0,0,0,0.6)">
-    <div class="mc" style="min-width:400px;border:3px solid #0071e3">
-      <h3 style="margin-top:0;font-size:18px">🤖 新建 Agent (TEST MODAL — 如果你看到这行, 模态确实在显示)</h3>
+  <!-- Modal: 新建Agent (class-based, NOT v-if/v-show — those silently failed in this env) -->
+  <div :class="showCreate ? 'modal modal-open' : 'modal'" @click.self="showCreate=false" data-modal="create">
+    <div class="mc">
+      <h3>🤖 新建 Agent</h3>
       <label class="mlabel">Agent ID *</label>
       <input v-model="newAgent.id" placeholder="mybot (英文字母开头)" ref="newAgentIdInput" autocomplete="off">
       <label class="mlabel">模板</label>
@@ -871,40 +865,16 @@ createApp({
       kl.value=false;
     }
 
-    // Open the create-agent modal. Wired explicitly (not inline @click="showCreate=true")
-    // so we get a clear log trail and can fail loudly if anything goes wrong.
+    // Open the create-agent modal: reset the form and show.
     function openCreate() {
-      if (typeof window !== 'undefined' && window.console) console.log('[openCreate] click, showCreate before=', showCreate.value);
       newAgent.value = {id:'',tpl:'comfyui',appId:'',appSecret:''};
       showCreate.value = true;
-      if (typeof window !== 'undefined' && window.console) console.log('[openCreate] showCreate after=', showCreate.value);
-      // After Vue's nextTick, check what the DOM actually contains.
-      if (typeof window !== 'undefined') {
-        Promise.resolve().then(() => {
-          const m = document.querySelector('.modal');
-          if (m) {
-            const cs = getComputedStyle(m);
-            const r = m.getBoundingClientRect();
-            console.log('[openCreate] nextTick: modal in DOM, display='+cs.display+' z='+cs.zIndex+' opacity='+cs.opacity+' top='+r.top+' height='+r.height+' text='+m.innerText.slice(0, 60));
-          } else {
-            console.log('[openCreate] nextTick: NO .modal in DOM (v-if did not render)');
-          }
-        });
-      }
     }
 
-    // Debug helpers exposed in the template + via window.__dbg
-    function forceOpenCreate() { showCreate.value = true; console.log('[forceOpenCreate] set true'); }
-    function forceCloseCreate() { showCreate.value = false; console.log('[forceCloseCreate] set false'); }
-
     async function createAgent(){
-      // Validate first so the click always does something visible (no more "dead
-      // button" when the user just didn't fill the ID).
-      if (typeof window !== 'undefined' && window.console) console.log('[createAgent] invoked, newAgent=', JSON.parse(JSON.stringify(newAgent.value)));
       const id = (newAgent.value.id || '').trim();
       if (!id) {
         showToast('请先填 Agent ID (英文字母开头, 2-30 字符)', 'err');
-        // Focus the input so they can type immediately
         const el = document.querySelector('.mc input');
         if (el) el.focus();
         return;
@@ -915,11 +885,9 @@ createApp({
       }
       try{
         const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, tpl:newAgent.value.tpl, appId:newAgent.value.appId, appSecret:newAgent.value.appSecret, workspaceTemplate:newAgent.value.tpl})});
-        if (typeof window !== 'undefined' && window.console) console.log('[createAgent] api response:', d);
         if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent '+id+' 创建成功')}
         else{showToast('创建失败: '+(d.error||'unknown'),'err')}
       }catch(e){
-        if (typeof window !== 'undefined' && window.console) console.error('[createAgent] error', e);
         showToast('创建失败: '+e.message,'err');
       }
     }
@@ -1201,45 +1169,6 @@ createApp({
           showToast('⚠️ ' + (e.reason.message || e.reason), 'err');
           if (window.console) console.error('[unhandledrejection]', e.reason);
         }
-      });
-      // Debug handles: paste these in DevTools console to inspect state directly.
-      window.__dbg = {
-        showCreate, newAgent, providers, agents, status, authRequired, authToken,
-        showCreate, showAuthModal, showProviderEdit, showSaveScene, showFeishuBotModal, showGuidedBot,
-        openCreate, createAgent, forceOpenCreate, forceCloseCreate,
-        modals: () => {
-          const m = document.querySelectorAll('.modal');
-          return Array.from(m).map(el => ({
-            visible: el.offsetParent !== null,
-            display: getComputedStyle(el).display,
-            zIndex: getComputedStyle(el).zIndex,
-            opacity: getComputedStyle(el).opacity,
-            text: el.innerText.slice(0, 100),
-          }));
-        },
-        dumpModal: () => {
-          const ms = document.querySelectorAll('.modal');
-          console.log(`[__dbg.dumpModal] found ${ms.length} .modal elements in DOM:`);
-          ms.forEach((m, i) => {
-            const cs = getComputedStyle(m);
-            console.log(`  [${i}] v-if-showCreate=${m.outerHTML.includes('showCreate')} display=${cs.display} z=${cs.zIndex} opacity=${cs.opacity} top=${m.getBoundingClientRect().top} height=${m.getBoundingClientRect().height}`);
-          });
-        },
-        forceOpen: () => { showCreate.value = true; console.log('[__dbg] forced showCreate=true'); },
-        forceClose: () => { showCreate.value = false; console.log('[__dbg] forced showCreate=false'); },
-        dumpBody: () => { console.log('[__dbg.dumpBody] body.innerHTML (first 4000 chars):', document.body.innerHTML.slice(0, 4000)); },
-      };
-
-      // Watch ref state changes for diagnostic logging
-      watch(showCreate, (v) => {
-        console.log('[watch] showCreate changed to:', v);
-        const m = document.querySelectorAll('.modal');
-        console.log('[watch] .modal elements in DOM:', m.length);
-        m.forEach((el, i) => {
-          const cs = getComputedStyle(el);
-          const r = el.getBoundingClientRect();
-          console.log(`  [${i}] display=${cs.display} z=${cs.zIndex} opacity=${cs.opacity} rect: top=${r.top}px left=${r.left}px w=${r.width}px h=${r.height}px`);
-        });
       });
     }
 
