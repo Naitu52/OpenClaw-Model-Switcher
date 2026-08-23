@@ -573,9 +573,9 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: 新建Agent -->
-  <div v-if="showCreate" class="modal" @click.self="showCreate=false">
-    <div class="mc">
-      <h3>🤖 新建 Agent</h3>
+  <div v-if="showCreate" class="modal" @click.self="showCreate=false" style="z-index:200;background:rgba(0,0,0,0.6)">
+    <div class="mc" style="min-width:400px;border:3px solid #0071e3">
+      <h3 style="margin-top:0;font-size:18px">🤖 新建 Agent (TEST MODAL — 如果你看到这行, 模态确实在显示)</h3>
       <label class="mlabel">Agent ID *</label>
       <input v-model="newAgent.id" placeholder="mybot (英文字母开头)" ref="newAgentIdInput" autocomplete="off">
       <label class="mlabel">模板</label>
@@ -1192,7 +1192,6 @@ createApp({
         }
       });
       // Debug handles: paste these in DevTools console to inspect state directly.
-      // (Does not affect production behavior; just exposes refs.)
       window.__dbg = {
         showCreate, newAgent, providers, agents, status, authRequired, authToken,
         showCreate, showAuthModal, showProviderEdit, showSaveScene, showFeishuBotModal, showGuidedBot,
@@ -1215,7 +1214,21 @@ createApp({
             console.log(`  [${i}] v-if-showCreate=${m.outerHTML.includes('showCreate')} display=${cs.display} z=${cs.zIndex} opacity=${cs.opacity} top=${m.getBoundingClientRect().top} height=${m.getBoundingClientRect().height}`);
           });
         },
+        forceOpen: () => { showCreate.value = true; console.log('[__dbg] forced showCreate=true'); },
+        forceClose: () => { showCreate.value = false; console.log('[__dbg] forced showCreate=false'); },
       };
+
+      // Watch ref state changes for diagnostic logging
+      watch(showCreate, (v) => {
+        console.log('[watch] showCreate changed to:', v);
+        const m = document.querySelectorAll('.modal');
+        console.log('[watch] .modal elements in DOM:', m.length);
+        m.forEach((el, i) => {
+          const cs = getComputedStyle(el);
+          const r = el.getBoundingClientRect();
+          console.log(`  [${i}] display=${cs.display} z=${cs.zIndex} opacity=${cs.opacity} rect: top=${r.top}px left=${r.left}px w=${r.width}px h=${r.height}px`);
+        });
+      });
     }
 
     return{
