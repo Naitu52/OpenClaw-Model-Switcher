@@ -1,237 +1,222 @@
 # OpenClaw Model Switcher v6.5.2 — Portable Edition
 
-A self-contained Node.js web UI to manage OpenClaw agents, models, providers,
-and Feishu bot bindings. Reads/writes `openclaw.json` directly via atomic
-rename + backups.
+**OpenClaw 一站式管理面板**：Agent / 模型 / 供应商 / 飞书 Bot / 工作区 / openclaw 本体维护。
+零依赖 Web UI（本地 Vue 打包，无 CDN），直接读写 `openclaw.json`（原子写入 + 自动备份），
+跨平台（Windows / macOS / Linux），路径全自动检测。
 
-## ⚡ 从 GitHub 下载后一键部署（Windows）
+## ✨ 功能总览
 
-1. 点页面绿色 **Code ▾ → Download ZIP** 解压（或 `git clone`）
-2. **先装 Node.js 18+**：https://nodejs.org/ （没有它脚本会提示并退出）
-3. 双击 **`一键部署.bat`**，按提示选择安装模式（回车默认全局）：
-   - 脚本自动检测 Node/npm/openclaw/端口占用
-   - 目录里没有 `.tgz` 时**自动执行 `npm pack`** 打包（无需手动准备）
-   - 安装完成后自动跑内置冒烟测试（自包含，不依赖你的环境）
-   - 完成后自动启动面板，浏览器打开 http://localhost:2325/
-4. 想手动跑也行：`node switcher.cjs` 或双击 `启动Switcher.bat`
+### 🤖 Agent 管理
+- **新建**：可选 18 个内置模板（全能专家/总助秘书/编程助手/…中文标签），可指定工作区（留空 = openclaw 默认工作区布局）
+- **编辑**：显示名 / 默认模型 / 设为默认标记 / **工作区变更**（自动迁移目录，含父目录与冲突保护）
+- **重命名 ID**：一键迁移全部关联 —— 工作区目录、agents 目录（含会话）、配置字段、路由绑定、飞书账号键、场景配置；默认 agent 受保护
+- **删除**：默认 agent 不可删除（需先转移默认标记）；删除同步清理飞书账号、绑定与场景死键
+- **默认 agent 实时解析**：第一个 `default:true` → 无则 list 第一个 → 才轮到 `main`，整行红色高亮；切换默认标记自动冻结原默认工作区，防止解析跳变
+- **模板切换**（慎用）：覆盖 AGENTS.md/SOUL.md/TOOLS.md/… 并重置记忆
 
-> 提示：本面板是 openclaw 的**管理界面**，openclaw 本体需另行安装
-> （`npm install -g openclaw`）。未装 openclaw 时大部分功能可用，
-> 仅 `/api/models` 与飞书诊断会提示 "CLI not configured"。
-> 面板也内置「🛠 安装 openclaw」向导（右上角按钮，可选安装位置/默认工作区）。
+### 🔄 模型切换
+- 每 Agent 独立下拉（按供应商分组，支持搜索过滤），批量设置 + 批量应用
+- 默认模型注册表自动同步；`prune` 一键清理孤儿模型键（支持 dry-run 预览）
 
-## Quick start (this machine, defaults)
+### ⚙️ 供应商配置
+- 已配置供应商表 + 添加/验证（probe 实时探测模型列表）
+- 自定义供应商（ID/BaseURL/APIKey/协议/Auth Header），中文 ID 支持
+- 全部刷新并发执行（6 路），失败互不阻塞
 
-    cd <model-switcher 源码目录>
-    node switcher.cjs
-    # or double-click 启动Switcher.bat
-    # Open http://localhost:2325/ in browser
+### 🐦 飞书 Bot 管理
+- Bot 账号（appId/appSecret/白名单 allowFrom）按 Agent 卡片展示
+- 路由绑定（channel=feishu → accountId → agentId）、扫码注册向导、连接诊断
 
-The defaults assume the original Windows layout (auto-detected; override with env vars):
+### 💾 数据安全
+- 所有写操作串行化（写锁）+ **原子写入**（临时文件 rename）+ 自动备份（保留 100 份，去抖 3s）
+- 手动备份 / 回滚（回滚前自动备份当前状态，误操作可再滚回）
+- 场景预设（保存/加载/删除，覆盖需确认）
 
-    OPENCLAW_HOME  =  <某盘>:\openclaw\.openclaw
-    OPENCLAW_WS    =  <某盘>:\openclaw\workspace
-    OPENCLAW_CLI   =  <npm 全局目录>\node_modules\openclaw\openclaw.mjs
-    PORT           =  2325
+### 📁 文件浏览器
+- 按 Agent 浏览工作区，单层 400 项上限防卡死（超大目录截断提示），在线查看/编辑文件
 
-## Run on any other machine
+### ⬆️ openclaw 本体维护
+- **版本检查与更新**：npm 最新版 + 历史版本（含 beta）下拉，安装/更新即点即用（输出实时回显）
+- **安装向导**（新机器部署）：
+  - 前置环境检测（Node 22.22.3+/24.15+/25.9+、npm、winget 一键装 Node LTS）
+  - 可选**安装位置**（npm 全局 prefix，自动处理含空格路径）
+  - 可选**数据根目录**（自动生成 `.openclaw/` 状态根 + `workspace/`，设置 `OPENCLAW_HOME` 用户环境变量）
 
-Set any subset of these env vars to override auto-detection:
+### 🛡 安全设计
+- 路径白名单（打开文件夹）、路径穿越防护（模板名/文件路径/备份路径全校验）
+- 密钥脱敏显示（只显示头尾）、可选 Bearer Token 认证（静态资源自动放行）
+- 静态资源仅 index.html + vue.global.prod.js，其余一律 404；`no-store` 无缓存
 
-| Var | What | Example |
-|-----|------|---------|
-| `OPENCLAW_HOME`   | path to `.openclaw` dir                       | `C:\Users\me\.openclaw` |
-| `OPENCLAW_WS`     | path to workspace dir                          | `D:\work\workspace`     |
-| `OPENCLAW_AGENTS` | path to agents dir                            | `C:\...\agents`         |
-| `OPENCLAW_CLI`    | path to `openclaw.mjs` or `dist/index.js`    | `C:\…\npm\node_modules\openclaw\openclaw.mjs` |
-| `FEISHU_REG`      | path to `app-registration-*.js`              | auto-detected from CLI  |
-| `OPENCLAW_NODE`   | node binary (default: `node` on PATH)        | `<node 安装目录>\node.exe` |
-| `SWITCHER_PORT`   | TCP port (default `2325`)                     | `2400`                  |
+## ⚡ 快速开始
 
-Examples (PowerShell):
+### 从 GitHub 下载（Windows）
 
-    $env:OPENCLAW_HOME = "$HOME\.openclaw"
-    $env:OPENCLAW_CLI  = "$env:APPDATA\npm\node_modules\openclaw\openclaw.mjs"
-    $env:SWITCHER_PORT = 2400
-    node switcher.cjs
+1. **Code ▾ → Download ZIP** 解压（或 `git clone`）
+2. **先装 Node.js 18+**：https://nodejs.org/
+3. 双击 **`一键部署.bat`**：
+   - 自动检测 Node/npm/openclaw/端口占用，目录无 `.tgz` 时自动 `npm pack`
+   - 三种安装模式：全局（推荐）/ 本地 / 自定义 prefix
+   - 安装后自动跑内置冒烟测试（自包含），然后自动启动面板
+4. 浏览器打开 http://localhost:2325/
 
-Examples (bash):
+### 手动运行
 
-    OPENCLAW_HOME=$HOME/.openclaw \
-    OPENCLAW_CLI=/usr/local/lib/node_modules/openclaw/openclaw.mjs \
-    SWITCHER_PORT=2400 \
-    node switcher.cjs
+```bash
+node switcher.cjs          # 或双击 启动Switcher.bat（Windows）/ ./启动Switcher.sh（macOS/Linux）
+```
 
-## Auto-detection order per slot
+### 本机默认布局（自动检测）
 
-1. Explicit env var (only used if `openclaw.json` exists inside it)
-2. Machine-known Windows convention (`<盘符>:\openclaw\...`)
-3. OS default (Linux/macOS: `~/.openclaw`, `/opt/openclaw`, etc.)
-4. CWD-relative fallback
+```
+OPENCLAW_HOME  =  <盘>:\openclaw\.openclaw     # 配置/状态根
+OPENCLAW_WS    =  <盘>:\openclaw\workspace     # 工作区
+OPENCLAW_CLI   =  <npm 全局>\node_modules\openclaw\openclaw.mjs
+PORT           =  2325
+```
 
-**Graceful degrade**: if `OPENCLAW_CLI` is missing, /api/models returns
-`{error: 'CLI not configured', hint: 'set OPENCLAW_CLI env var'}`.
-Feishu register endpoints require both CLI and FEISHU_REG; if missing they
-return 503. Everything else (agents, providers, backups, file editor)
-works without the CLI.
+> 提示：面板是 openclaw 的**管理界面**，openclaw 本体需另行安装
+> （`npm install -g openclaw`）。未装时大部分功能可用，仅 `/api/models`
+> 与飞书诊断提示 "CLI not configured"；也可以直接用面板右上角
+> 「🛠 安装 openclaw」向导完成。
 
-## Model registry sync (v6.3+)
+## 🔧 环境变量
 
-`agents.defaults.models` is a registry of every model the user has ever
-referenced. Without explicit cleanup, deleting a GGUF from disk (or
-removing it from a provider's `models` list) leaves orphan keys behind.
-The switcher reconciles in two ways:
+| 变量 | 作用 | 示例 |
+|------|------|------|
+| `OPENCLAW_HOME`   | `.openclaw` 状态根目录 | `C:\Users\me\.openclaw` |
+| `OPENCLAW_WS`     | 工作区根目录 | `D:\work\workspace` |
+| `OPENCLAW_AGENTS` | agents 目录 | `C:\...\agents` |
+| `OPENCLAW_CLI`    | `openclaw.mjs` / `dist/index.js` 路径 | `C:\…\npm\node_modules\openclaw\openclaw.mjs` |
+| `FEISHU_REG`      | `app-registration-*.js`（自动检测） | 一般无需设置 |
+| `OPENCLAW_NODE`   | node 可执行文件 | `<node 安装目录>\node.exe` |
+| `SWITCHER_PORT`   | 端口（默认 2325，占用自动 +1） | `2400` |
+| `SWITCHER_LOG`    | 日志文件路径 | 默认 `%LOCALAPPDATA%\OpenClawModelSwitcher\` |
+| `SWITCHER_BACKUP_DIR` | 备份目录（建议每实例独立） | 同上 |
+| `SWITCHER_SCENES` | scenes.json 路径 | 同上 |
+| `SWITCHER_TOKEN`  | 设置后启用 Bearer Token 认证 | `my-secret` |
 
-1. **Real-time on probe** — `POST /api/probe` now also prunes any
-   `${provider}/X` key from `agents.defaults.models` where `X` is no
-   longer in the freshly-probed list, AND no agent currently uses it as
-   `model.primary`. So every successful probe is a live sync.
-2. **Manual cleanup** — `POST /api/agents/defaults/models/prune` (or
-   `GET ...?dryRun=true` for a safe preview) does a global pass using
-   each provider's current `models` list as ground truth. Removes any
-   key that is (a) not in use by any agent, AND (b) not present in any
-   `models.providers[*].models[*].id`. In-use keys (e.g. remote-only
-   models registered outside the switcher) are always preserved.
+**路径自动检测顺序**：显式环境变量 → 平台约定（Windows `<盘>:\openclaw\...`）→ OS 默认
+（Linux/macOS `~/.openclaw`）→ npm 全局 → `where/which` → 有界父目录扫描。
 
-In-use keys are always preserved, so an orphan can never break a live
-agent assignment. After prune, `agents.defaults.models` only contains
-models that are still real, still assigned, or both.
+## 🧩 Agent 模板机制
 
-## Agent 模板机制
-
-「新建 Agent」的模板来源（按查找顺序）：
-
-1. `<switcher 安装目录>/templates/<模板名>` —— **内置推荐模板**（随包分发，下表）
-2. `OPENCLAW_WS/_templates/<模板名>` —— 自定义集中模板目录
-3. 现存 Agent 配置里的 workspace —— 可以把现有 agent 当模板
+**模板查找顺序**：
+1. `<switcher 安装目录>/templates/<模板名>` —— 内置推荐模板
+2. `OPENCLAW_WS/_templates/<模板名>` —— 自定义集中目录
+3. 现存 Agent 的 workspace —— 现有 agent 可当模板
 4. `OPENCLAW_WS/<模板名>` —— 兜底
 
-创建时把模板目录里的 `AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md` 复制到新 agent 工作区；
-`MEMORY.md` **不复制**（模板目录里的是运行记忆），新 agent 从空记忆开始。
+创建时复制 `AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md`；
+`MEMORY.md` **不复制**（新 agent 从空记忆开始）。
 
-内置推荐模板（`templates/`，中文标签取自各模板 IDENTITY.md 的 Name 行）：
+**内置推荐模板（18 个）**：
 
-| 模板 | 用途 |
+| 模板 | 用途 | 模板 | 用途 |
+|------|------|------|------|
+| `all-rounder` | 全能专家 | `research` | 调研分析师 |
+| `ceo-assistant` | 总助秘书 | `seo` | SEO 优化师 |
+| `coding` | 编程开发助手 | `social-media` | 社媒运营 |
+| `data-analyst` | 数据分析师 | `support` | 客服专家 |
+| `design` | 设计顾问 | `teacher` | 教育辅导 |
+| `ecommerce` | 电商运营 | `translator` | 专业翻译 |
+| `finance` | 财务分析 | `video` | 视频编导 |
+| `health` | 健康顾问 | `wechat` | 深度内容编辑 |
+| `law` | 法律助手 | `xhs` | 小红书笔记操盘手 |
+
+自定义模板：在 `OPENCLAW_WS/_templates/` 下建目录放入上述 .md 文件即可，前端下拉自动出现。
+
+## 📡 API 一览
+
+无需 CLI（面板核心）：
+
+```
+GET  /api/status                     # 状态/统计/默认工作区
+GET  /api/agents                     # agent 列表（含默认标记实时解析）
+GET  /api/providers                  # 供应商
+GET  /api/providers/catalog          # 供应商目录（含模型）
+GET  /api/providers/available        # 可用供应商（30s 缓存）
+GET  /api/backups?all=1              # 备份（all=1 全量）
+GET  /api/scenes /api/log?lines=N    # 场景 / 日志
+GET  /api/feishu /api/feishu/diagnostics
+POST /api/switch                     # {changes:{agentId:modelId}}
+POST /api/probe                      # {provider, apiKey, baseUrl?}
+POST /api/providers/update|delete|refresh-all
+POST /api/backup /api/rollback       # {path}
+POST /api/agent/create               # {id, workspaceTemplate?, workspace?}
+POST /api/agent/update               # {id, name?, model?, default?, workspace?}
+POST /api/agent/rename               # {id, newId} 全关联迁移
+POST /api/agent/delete               # {id}
+POST /api/agent/template/apply       # {id, template?}
+POST /api/agent/tools/toggle         # {id, tool, deny}
+POST /api/agents/defaults/workspace  # {workspace?} 变更默认工作区；空=恢复内置默认
+GET  /api/agent/:id/files|file       # 文件浏览/读取
+POST /api/agent/:id/file/write
+POST /api/scenes/save|apply|delete
+POST /api/feishu/bot/save|delete
+POST /api/feishu/binding/save|delete
+POST /api/feishu/allowfrom/add|remove
+```
+
+需要 CLI（未装返回 503）：
+
+```
+GET  /api/models?q=...
+POST /api/feishu/register/begin|poll|save     # 扫码注册向导
+```
+
+openclaw 本体维护：
+
+```
+GET  /api/openclaw/update/info        # 当前/最新/历史版本（30s 缓存）
+POST /api/openclaw/update             # {version?} 空=最新
+GET  /api/openclaw/install/status     # 前置环境检测（30s 缓存）
+POST /api/openclaw/install            # {prefix?, root?}
+POST /api/openclaw/install/node       # winget 一键装 Node LTS
+```
+
+## 📦 文件说明
+
+| 文件 | 用途 |
 |------|------|
-| `all-rounder` | 全能专家 |
-| `ceo-assistant` | 总助秘书 |
-| `coding` | 编程开发助手 |
-| `data-analyst` | 数据分析师 |
-| `design` | 设计顾问 |
-| `ecommerce` | 电商运营 |
-| `finance` | 财务分析 |
-| `health` | 健康顾问 |
-| `law` | 法律助手 |
-| `research` | 调研分析师 |
-| `seo` | SEO 优化师 |
-| `social-media` | 社媒运营 |
-| `support` | 客服专家 |
-| `teacher` | 教育辅导 |
-| `translator` | 专业翻译 |
-| `video` | 视频编导 |
-| `wechat` | 深度内容编辑 |
-| `xhs` | 小红书笔记操盘手 |
+| `switcher.cjs` | Node.js 服务器（便携单文件） |
+| `index.html` | 单页前端（Vue 3，本地打包） |
+| `vue.global.prod.js` | 本地 Vue 运行时（无 CDN） |
+| `templates/` | 18 个内置 agent 模板 |
+| `一键部署.bat` | Windows 一键安装/部署 |
+| `启动Switcher.bat` / `启动Switcher.sh` | 启动脚本 |
+| `install-task.ps1` | 注册开机自启计划任务 |
+| `test/smoke.js` | 自包含冒烟测试（`node test/smoke.js`） |
+| `scenes.json.example` | 场景配置文件示例 |
+| `scripts/write-shasums.js` | 重新生成 SHA256SUMS |
 
-自定义模板：在 `OPENCLAW_WS/_templates/` 下建一个目录，放入上述 .md 文件即可，
-前端下拉会自动出现（推荐模板区），或直接用 API 传 `workspaceTemplate`。
+运行时数据默认在 `%LOCALAPPDATA%\OpenClawModelSwitcher\`（Windows）
+或 `~/.openclaw-model-switcher/`（Linux/macOS）：`backups/`（100 份）、`switcher.log`、`scenes.json`。
 
-## Diagnostic
+## 🚀 开机自启（Windows）
 
-    GET /api/status     # uptime, agent count, paths block
-    GET /api/paths      # all resolved paths as JSON
+右键 `install-task.ps1` → 使用 PowerShell 运行（管理员），
+注册 `OpenClawModelSwitcher` 计划任务：登录自启 + 崩溃自动重启。
 
-The bootstrap log prints the resolved paths (example output):
+## 🖥 多实例
 
-    [paths] home=<openclaw home>\.openclaw
-    [paths] ws=<workspace 目录>
-    [paths] agents=<openclaw home>\agents
-    [paths] cli=<npm 全局目录>\node_modules\openclaw\openclaw.mjs
-    [paths] feishu_reg=<npm 全局目录>\node_modules\openclaw\dist\app-registration-*.js
-    [paths] port=2325
-    [Server: http://localhost:2325 (pid=N)]
+同一台机器跑多个面板：不同端口 + 各自独立的
+`SWITCHER_LOG` / `SWITCHER_BACKUP_DIR` / `SWITCHER_SCENES` / `OPENCLAW_HOME`
+（否则备份会互相覆盖）。
 
-## Files in this directory
+## 🔍 故障排查
 
-| File | Purpose |
-|------|---------|
-| `switcher.cjs`          | Node.js server (portable) |
-| `index.html`            | Single-page frontend |
-| `启动Switcher.bat`        | Windows launcher (env vars documented inline) |
-| `install-task.ps1`       | Registers this as a Windows scheduled task |
-| `scenes.json`           | Your saved scene presets |
-| `backups/`              | Rolling 30 backups of `openclaw.json` |
-| `switcher.log`          | Boot + change log |
-| `scripts/write-shasums.js` | Regenerates `SHA256SUMS` for the tarballs |
+| 症状 | 原因 | 解决 |
+|------|------|------|
+| 浏览器连不上，日志显示 Port in use | 端口被占 | `SWITCHER_PORT=2326` 或自动 +1 |
+| `/api/status` → Config read failed | `OPENCLAW_HOME` 无 openclaw.json | 不设环境变量，看启动日志 `home=` |
+| `/api/models` → 503 CLI not configured | 没装 openclaw / 找不到 CLI | 装 openclaw 或设 `OPENCLAW_CLI` |
+| 飞书注册 503 | FEISHU_REG 缺失 | 安装带飞书集成的 openclaw |
+| 黑窗闪退 | node 不在 PATH | 装 Node 或设 `OPENCLAW_NODE` |
+| 改名/迁移后 gateway 行为异常 | gateway 缓存旧 id | 重启 openclaw gateway |
+| 部署后 UI 没变化 | 浏览器缓存 | 已改为 no-store，正常刷新即可 |
 
-## Endpoints
+## ✅ 冒烟测试
 
-Common (works without CLI):
-
-    GET  /api/status
-    GET  /api/agents
-    GET  /api/providers
-    GET  /api/providers/catalog
-    GET  /api/backups
-    GET  /api/scenes
-    GET  /api/log
-    GET  /api/feishu                     # account/binding config
-    GET  /api/feishu/diagnostics
-    POST /api/switch                      # {changes: {agentId: modelId}}
-    POST /api/probe                       # {provider, apiKey, baseUrl?}
-    GET  /api/agents/defaults/models/prune?dryRun=true   # safe dry-run (always read-only)
-    POST /api/agents/defaults/models/prune               # real cleanup; respects ?dryRun=true or body.dryRun
-    POST /api/providers/update            # {id, baseUrl?, apiKey?, api?, authHeader?}  — patch existing
-    POST /api/providers/delete            # {id, force?}  — refuses if any agent's model.primary uses it
-    POST /api/providers/refresh-all       # re-probe every configured provider; 3s/attempt, full re-sync
-    POST /api/rollback                    # {path: '<backup path>'}
-    POST /api/agent/create                # {id, workspaceTemplate, [appId, appSecret]}
-    POST /api/agent/delete                # {id}
-    GET  /api/agent/:id/files
-    GET  /api/agent/:id/file?path=...
-    POST /api/agent/:id/file/write        # {path, content}
-    POST /api/scenes/save | apply | delete
-    POST /api/feishu/bot/save | delete
-    POST /api/feishu/binding/save | delete
-    POST /api/feishu/allowfrom/add | remove
-
-CLI-required (return 503 when CLI missing):
-
-    GET  /api/models?q=...
-    POST /api/feishu/register/begin | poll | save    # QR sign-up flow
-
-## Auto-start on Windows login
-
-Run `install-task.ps1` once with admin via the OpenClaw scheduled task
-(`START IN ADMIN POWERSHELL`, run `<源码目录>\install-task.ps1`,
-then click Yes on the UAC prompt). It registers `OpenClawModelSwitcher`
-to start on user logon with auto-restart on failure.
-
-## Multi-instance on one machine
-
-Two switcher instances on the same host: use different ports and point
-each instance's `SWITCHER_LOG`, `SWITCHER_BACKUP_DIR`, `SWITCHER_SCENES`,
-`OPENCLAW_HOME` at independent paths — otherwise backups will clobber each
-other.
-
-## Troubleshooting
-
-| Symptom | Likely cause | Fix |
-|---------|--------------|-----|
-| Browser can't connect; switcher.log shows `Port N in use` | Another instance on that port | set `SWITCHER_PORT=2326` (any free port) |
-| `/api/status` → `Config read failed` | `OPENCLAW_HOME` points wrong or has no `openclaw.json` | leave env unset, re-check boot log for `home=...` |
-| `/api/models` → 503 `CLI not configured` | `OPENCLAW_CLI` not set & auto-detect failed | `set OPENCLAW_CLI=C:\path\to\openclaw.mjs` |
-| `/api/feishu/register/*` → 503 | `FEISHU_REG` not found (Feishu SDK missing) | install OpenClaw with feishu integration, or skip |
-| Black window flashes & exits | `node` not on PATH or `.bat` runs in wrong CWD | install Node, or `set OPENCLAW_NODE=C:\nodejs\node.exe` |
-| Port 2324 fails (Windows only) | Windows HTTP.SYS reserves it | use 2325+ (default already 2325) |
-| Stale cached config after big edits | auto-rename is atomic, but if interrupted | `GET /api/log` to confirm write completed, retry once |
-| Multiple switchers in same dir overwrite each other's backups | both writing to `<dir>/backups` | `set SWITCHER_BACKUP_DIR=...` to per-instance path |
-| Boot takes >5s | npm / parent-dir deep scan running | expected trade-off; check `[paths]` log line to see which stage found it |
-| Windows .bat shows garbled `not a command` lines | file encoded UTF-8 without BOM, run via cmd | bat includes `chcp 65001 >nul`; if still garbled, run via `node switcher.cjs` directly |
-
-## Smoke test
-
-A `test/smoke.js` script exercises core endpoints with a temporary
-isolated instance. Run with `node test/smoke.js`. Exits 0 on success,
-1 on any failure.
-
-    node test/smoke.js
+```bash
+node test/smoke.js    # 临时隔离实例，退出码 0 = 通过
+```
