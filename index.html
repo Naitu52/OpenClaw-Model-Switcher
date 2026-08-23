@@ -87,7 +87,8 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
 .fi:hover,.fi.a{font-weight:500}
 .lg{border-radius:8px;padding:6px 8px;font-family:monospace;font-size:10px;line-height:1.5;max-height:150px;overflow-y:auto}
 .lg .err{color:#ff6b6b}.lg .ok{color:#51cf66}
-.modal{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:100}
+.modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:100}
+.modal.modal-open{display:flex !important}
 .mc{border-radius:14px;padding:20px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto}
 .mc h3{font-size:15px;margin-bottom:10px}
 .mc .mlabel{display:block;font-size:11px;font-weight:500;margin-top:8px;margin-bottom:3px}
@@ -255,7 +256,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div class="card">
     <div class="f" style="justify-content:space-between">
       <div class="hdr">🤖 Agent管理</div>
-      <button class="btn pri xs" @click="openCreate">+ 新建</button>
+      <button class="btn pri xs" @click="openCreate" data-btn="create">+ 新建</button>
     </div>
     <div class="kr" v-for="a in agents" :key="a.id" style="font-size:12px;padding:6px 0">
       <span style="font-weight:600;width:80px">{{ a.id }}</span>
@@ -578,8 +579,8 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
-  <!-- Modal: 新建Agent (v-show because v-if wasn't rendering in user's env) -->
-  <div v-show="showCreate" class="modal" @click.self="showCreate=false" style="z-index:200;background:rgba(0,0,0,0.6)">
+  <!-- Modal: 新建Agent (class-based, NOT v-if/v-show — those failed in user's env) -->
+  <div :class="showCreate ? 'modal modal-open' : 'modal'" @click.self="showCreate=false" data-modal="create" style="z-index:200;background:rgba(0,0,0,0.6)">
     <div class="mc" style="min-width:400px;border:3px solid #0071e3">
       <h3 style="margin-top:0;font-size:18px">🤖 新建 Agent (TEST MODAL — 如果你看到这行, 模态确实在显示)</h3>
       <label class="mlabel">Agent ID *</label>
