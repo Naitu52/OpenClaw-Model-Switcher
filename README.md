@@ -4,6 +4,22 @@ A self-contained Node.js web UI to manage OpenClaw agents, models, providers,
 and Feishu bot bindings. Reads/writes `openclaw.json` directly via atomic
 rename + backups.
 
+## ⚡ 从 GitHub 下载后一键部署（Windows）
+
+1. 点页面绿色 **Code ▾ → Download ZIP** 解压（或 `git clone`）
+2. **先装 Node.js 18+**：https://nodejs.org/ （没有它脚本会提示并退出）
+3. 双击 **`一键部署.bat`**，按提示选择安装模式（回车默认全局）：
+   - 脚本自动检测 Node/npm/openclaw/端口占用
+   - 目录里没有 `.tgz` 时**自动执行 `npm pack`** 打包（无需手动准备）
+   - 安装完成后自动跑内置冒烟测试（自包含，不依赖你的环境）
+   - 完成后自动启动面板，浏览器打开 http://localhost:2325/
+4. 想手动跑也行：`node switcher.cjs` 或双击 `启动Switcher.bat`
+
+> 提示：本面板是 openclaw 的**管理界面**，openclaw 本体需另行安装
+> （`npm install -g openclaw`）。未装 openclaw 时大部分功能可用，
+> 仅 `/api/models` 与飞书诊断会提示 "CLI not configured"。
+> 面板也内置「🛠 安装 openclaw」向导（右上角按钮，可选安装位置/默认工作区）。
+
 ## Quick start (this machine, defaults)
 
     cd <model-switcher 源码目录>
