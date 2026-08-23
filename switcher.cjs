@@ -389,6 +389,25 @@ async function mutate(fn) {
   }
 }
 
+// #6b: scenes 文件独立串行链——readScenes+writeScenes 全程在锁内，
+// 防并发覆盖（rename 迁移场景键 vs scenes/save 同时写）。
+let scenesChain = Promise.resolve();
+async function mutateScenes(fn) {
+  const prev = scenesChain;
+  let release;
+  scenesChain = new Promise(r => { release = r; });
+  try {
+    await prev;
+    const r = readScenes();
+    if (!r.ok) return r;
+    const result = await fn(r.scenes);
+    if (result && result.changed) writeScenes(r.scenes);
+    return result;
+  } finally {
+    release();
+  }
+}
+
 function write(cfg) {
   // 配置已变更：CLI 模型列表缓存与飞书诊断缓存立即失效，
   // 否则 probe/update 之后最多滞后 10s/15s（非实时）。
@@ -1706,15 +1725,15 @@ const srv = http.createServer(async (req,res)=>{
           return {ok:true};
         });
         if(!rr.ok) return json(res,rr, rr.code===E.NOT_FOUND?404:400);
-        // 配置已删 → 清理场景死键（与 rename 的迁移对称）
+        // 配置已删 → 清理场景死键（与 rename 的迁移对称；#6b 走 scenes 串行链）
         try {
           if(fs.existsSync(SCENES)){
-            const sr=readScenes();
-            if(sr.ok){
+            const sr=await mutateScenes((scenes)=>{
               let changed=false;
-              for(const s of sr.scenes){ if(s&&s.config&&s.config[id]!==undefined){ delete s.config[id]; changed=true; } }
-              if(changed){ writeScenes(sr.scenes); log(`Scene cleanup after delete: ${id}`); }
-            }
+              for(const s of scenes){ if(s&&s.config&&s.config[id]!==undefined){ delete s.config[id]; changed=true; } }
+              return {ok:true, changed};
+            });
+            if(sr.ok && sr.changed) log(`Scene cleanup after delete: ${id}`);
           }
         } catch{}
         // 目录删除（失败只留垃圾，不影响配置一致性）
@@ -1757,7 +1776,7 @@ const srv = http.createServer(async (req,res)=>{
           // 父目录保护：目标/当前工作区若是其他 agent 工作区的父目录（或相同路径），
           // 迁移会拖走/冲突别的 agent 的数据（如把 workspace 指向根目录会把所有 agent 目录卷走）。
           if(path.resolve(current)!==path.resolve(wsTarget)){
-            const others=(c0.agents?.list||[]).filter(a=>a.id!==id).map(a=>({id:a.id, ws:(()=>{try{return path.resolve(resolveAgentWorkspace(a.id));}catch{return null;}})()})).filter(x=>x.ws);
+            const others=(c0.agents?.list||[]).filter(a=>a.id!==id).map(a=>({id:a.id, ws:(()=>{try{return path.resolve(resolveAgentWorkspace(a.id, c0));}catch{return null;}})()})).filter(x=>x.ws);
             const t=path.resolve(wsTarget);
             const conflict=others.find(x=>x.ws===t);
             if(conflict)
@@ -1878,7 +1897,7 @@ const srv = http.createServer(async (req,res)=>{
         if(newId===id) return json(res,{ok:false,error:'新旧 id 相同'},400);
         if(id==='main') return json(res,{ok:false,error:'默认 agent（main）不可重命名'},400);
         try {
-          const rr = await mutate((c)=>{
+          const rr = await mutate(async (c)=>{
             const entry=(c.agents?.list||[]).find(a=>a.id===id);
             if(!entry) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
             const defs = (c.agents?.list||[]).filter(a=>a&&a.default);
@@ -1947,14 +1966,15 @@ const srv = http.createServer(async (req,res)=>{
               report.push('飞书账号');
             }
             // 6) scenes.json 键迁移（switcher 自己的场景文件；坏文件不迁移、不覆盖）
+            //    #6b: 走 scenes 串行链，防与 scenes/save|delete 并发覆盖
             try {
               if(fs.existsSync(SCENES)){
-                const sr=readScenes();
-                if(sr.ok){
+                const sr=await mutateScenes((scenes)=>{
                   let changed=false;
-                  for(const s of sr.scenes){ if(s&&s.config&&s.config[id]!==undefined){ s.config[newId]=s.config[id]; delete s.config[id]; changed=true; } }
-                  if(changed){ writeScenes(sr.scenes); report.push('场景配置'); }
-                }
+                  for(const s of scenes){ if(s&&s.config&&s.config[id]!==undefined){ s.config[newId]=s.config[id]; delete s.config[id]; changed=true; } }
+                  return {ok:true, changed};
+                });
+                if(sr.ok && sr.changed) report.push('场景配置');
               }
             } catch{}
             return {ok:true, oldId:id, newId, report};
@@ -2038,18 +2058,19 @@ const srv = http.createServer(async (req,res)=>{
         return json(res,{status:'ok'});
       }
       if(p==='/api/scenes/save') {
-        const r=readScenes();
-        if(!r.ok) return json(res,{ok:false,error:r.error},500);
-        const scenes=r.scenes;
-        // 如果同名场景存在则覆盖
-        const idx=scenes.findIndex(x=>x.name===b.name);
-        const entry={name:b.name,timestamp:ts(),config:b.config};
-        if(idx>=0) scenes[idx]=entry; else scenes.push(entry);
-        try { writeScenes(scenes); } catch(e){ return json(res,{ok:false,error:'场景保存失败: '+e.message},500); }
+        // #6b: 走 scenes 串行链（读-改-写原子）
+        const rr=await mutateScenes((scenes)=>{
+          const idx=scenes.findIndex(x=>x.name===b.name);
+          const entry={name:b.name,timestamp:ts(),config:b.config};
+          if(idx>=0) scenes[idx]=entry; else scenes.push(entry);
+          return {ok:true, changed:true};
+        });
+        if(!rr.ok) return json(res,{ok:false,error:rr.error},500);
         log(`Scene save: ${b.name}`);
         return json(res,{status:'ok'});
       }
       if(p==='/api/scenes/apply') {
+        // 只读场景 → 不用 scenes 锁（避免与 rename 的 config 锁交叉死锁）
         const r=readScenes();
         if(!r.ok) return json(res,{ok:false,error:r.error},500);
         const s=r.scenes.find(x=>x.name===b.name);
@@ -2058,10 +2079,12 @@ const srv = http.createServer(async (req,res)=>{
         return json(res,{status:'ok',changed:n});
       }
       if(p==='/api/scenes/delete') {
-        const r=readScenes();
-        if(!r.ok) return json(res,{ok:false,error:r.error},500);
-        const scenes=r.scenes.filter(x=>x.name!==b.name);
-        try { writeScenes(scenes); } catch(e){ return json(res,{ok:false,error:'场景删除失败: '+e.message},500); }
+        const rr=await mutateScenes((scenes)=>{
+          const before=scenes.length;
+          for(let i=scenes.length-1;i>=0;i--){ if(scenes[i].name===b.name) scenes.splice(i,1); }
+          return {ok:true, changed:scenes.length!==before};
+        });
+        if(!rr.ok) return json(res,{ok:false,error:rr.error},500);
         log(`Scene delete: ${b.name}`);
         return json(res,{status:'ok'});
       }
@@ -2289,7 +2312,7 @@ const srv = http.createServer(async (req,res)=>{
       try {
         const cWs=read();
         defWs = String(cWs.agents?.defaults?.workspace || '').trim();
-        for(const a of (cWs.agents?.list||[])){ try{ agentWs.push(resolveAgentWorkspace(a.id)); }catch{} }
+        for(const a of (cWs.agents?.list||[])){ try{ agentWs.push(resolveAgentWorkspace(a.id, cWs)); }catch{} }
       } catch {}
       const allowed = [
         BACKUP_DIR,
