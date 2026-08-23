@@ -464,9 +464,9 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     <div class="mc">
       <h3>{{ feishuBotForm._edit ? '编辑' : '添加' }} 飞书 Bot</h3>
       <label class="mlabel">Bot Key *</label>
-      <input v-model="feishuBotForm.botKey" :disabled="feishuBotForm._edit" placeholder="例: audio_bot">
+      <input v-model="feishuBotForm.botKey" :disabled="feishuBotForm._edit" placeholder="例: mybot_bot">
       <label class="mlabel">显示名</label>
-      <input v-model="feishuBotForm.name" placeholder="例: audio">
+      <input v-model="feishuBotForm.name" placeholder="例: 我的机器人">
       <label class="mlabel">白名单 ID（{{ feishuBotAllowFrom.length }} 个）</label>
       <div style="font-size:10px;font-family:monospace;color:#6e6e73;background:#f5f5f7;border-radius:6px;padding:6px 8px;max-height:100px;overflow-y:auto">
         <div v-for="id in feishuBotAllowFrom" :key="id" class="f" style="padding:1px 0">
@@ -551,7 +551,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <!-- 选择保存选项 -->
       <div v-if="reg.status==='done'" style="background:#f5f5f7;border-radius:8px;padding:10px;margin-bottom:8px">
         <label class="mlabel">账号 ID (botKey)</label>
-        <input v-model="regBotKey" placeholder="默认用 Agent 名生成 (如 coding_bot)">
+        <input v-model="regBotKey" placeholder="默认用 Agent 名生成 (如 mybot_bot)">
         <label class="mlabel">绑定 Agent</label>
         <select v-model="guidedBot.agentId">
           <option value="">不绑定（手动绑定）</option>
@@ -659,7 +659,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <!-- 2) 安装 openclaw -->
       <div style="font-size:12px;font-weight:600;margin-bottom:6px">2️⃣ 安装 openclaw（npm install -g openclaw）</div>
       <label class="mlabel">安装位置（npm 全局 prefix，留空 = 当前：<span class="t" style="font-family:monospace">{{ installStatus?.prefix || '-' }}</span>）</label>
-      <input v-model="installForm.prefix" placeholder="例：D:\openclaw\global（程序本体位置，留空用默认全局位置）" style="font-family:monospace;font-size:11px">
+      <input v-model="installForm.prefix" placeholder="例：D:\tools\global（程序本体位置，留空用默认全局位置）" style="font-family:monospace;font-size:11px">
       <label class="mlabel">openclaw 根目录（数据目录，留空 = 不创建）</label>
       <input v-model="installForm.root" :placeholder="'例：D:\\openclaw（自动生成 .openclaw / workspace，并设置 OPENCLAW_HOME）'" style="font-family:monospace;font-size:11px">
       <div style="font-size:10px;color:#86868b;margin-top:2px;line-height:1.5">
@@ -1654,7 +1654,7 @@ createApp({
         reg.value.remainSec=d.expireIn||600;
         reg.value.status='pending';
         regMsg.value='等待扫码...';
-        // botKey 留空：保存时后端按绑定 Agent 生成 (如 coding_bot)。
+        // botKey 留空：保存时后端按绑定 Agent 生成 (如 mybot_bot)。
         // 之前默认用 device_code 前 8 位 (v1:eyJhb) — 含冒号，openclaw 不认 → 永远 not configured。
         regBotKey.value='';
         // 轮询

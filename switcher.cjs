@@ -1458,7 +1458,7 @@ const srv = http.createServer(async (req,res)=>{
     const fm=p.match(/^\/api\/agent\/([^/]+)\/files$/);
     if(method==='GET'&&fm) {
       // 按目录浏览：?path=<相对子目录> 返回该层级的目录+文件（单层，不递归，
-      // 避免 comfyui/projects 这种 18GB 目录把接口拖死）。
+      // 避免超大项目目录（18GB+）把接口拖死）。
       const base=resolveAgentWorkspace(fm[1]);
       if(!fs.existsSync(base)) return json(res,{path:'',dirs:[],files:[]});
       const rel=String(q.path||'');
@@ -1466,7 +1466,7 @@ const srv = http.createServer(async (req,res)=>{
       if(!dir) return json(res,{error:'Path not allowed'},403);
       if(!fs.existsSync(dir) || !fs.statSync(dir).isDirectory()) return json(res,{path:rel,dirs:[],files:[]});
       const dirs=[], files=[];
-      // 单层条目上限：超大目录（如 comfyui/projects）只返回前 N 项，防止前端渲染卡死
+      // 单层条目上限：超大目录（18GB+ 项目目录）只返回前 N 项，防止前端渲染卡死
       const MAX_ENTRIES = 400;
       let truncated = false;
       try {
@@ -1618,7 +1618,7 @@ const srv = http.createServer(async (req,res)=>{
           if(!c.bindings) c.bindings=[];
           c.bindings.push({type:'route',agentId:id,match:{channel:'feishu',accountId:`${id}_bot`}});
         }
-        write(c); log(`Create: ${id} (tpl=${b.workspaceTemplate||'comfyui'}, feishu=${!!(b.appId&&b.appSecret)})`);
+        write(c); log(`Create: ${id} (tpl=${b.workspaceTemplate||'(none)'}, feishu=${!!(b.appId&&b.appSecret)})`);
         return json(res,{ok:true});
       }
       if(p==='/api/agent/delete') {
@@ -1679,7 +1679,7 @@ const srv = http.createServer(async (req,res)=>{
             wsTarget=resolveDefaultWorkspaceFor(c0,id);
           }
           // 父目录保护：目标/当前工作区若是其他 agent 工作区的父目录（或相同路径），
-          // 迁移会拖走/冲突别的 agent 的数据（如把 workspace 指向 D:\openclaw 会把所有 agent 目录卷走）。
+          // 迁移会拖走/冲突别的 agent 的数据（如把 workspace 指向根目录会把所有 agent 目录卷走）。
           if(path.resolve(current)!==path.resolve(wsTarget)){
             const others=(c0.agents?.list||[]).filter(a=>a.id!==id).map(a=>({id:a.id, ws:(()=>{try{return path.resolve(resolveAgentWorkspace(a.id));}catch{return null;}})()})).filter(x=>x.ws);
             const t=path.resolve(wsTarget);

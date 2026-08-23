@@ -6,16 +6,16 @@ rename + backups.
 
 ## Quick start (this machine, defaults)
 
-    cd D:\openclaw\workspace\model-switcher
+    cd <model-switcher 源码目录>
     node switcher.cjs
     # or double-click 启动Switcher.bat
     # Open http://localhost:2325/ in browser
 
-The defaults assume the original Windows layout:
+The defaults assume the original Windows layout (auto-detected; override with env vars):
 
-    OPENCLAW_HOME  =  D:\openclaw\.openclaw
-    OPENCLAW_WS    =  D:\openclaw\workspace
-    OPENCLAW_CLI   =  D:\nodejs\node_global\node_modules\openclaw\openclaw.mjs
+    OPENCLAW_HOME  =  <某盘>:\openclaw\.openclaw
+    OPENCLAW_WS    =  <某盘>:\openclaw\workspace
+    OPENCLAW_CLI   =  <npm 全局目录>\node_modules\openclaw\openclaw.mjs
     PORT           =  2325
 
 ## Run on any other machine
@@ -29,7 +29,7 @@ Set any subset of these env vars to override auto-detection:
 | `OPENCLAW_AGENTS` | path to agents dir                            | `C:\...\agents`         |
 | `OPENCLAW_CLI`    | path to `openclaw.mjs` or `dist/index.js`    | `C:\…\npm\node_modules\openclaw\openclaw.mjs` |
 | `FEISHU_REG`      | path to `app-registration-*.js`              | auto-detected from CLI  |
-| `OPENCLAW_NODE`   | node binary (default: `node` on PATH)        | `D:\nodejs\node.exe`    |
+| `OPENCLAW_NODE`   | node binary (default: `node` on PATH)        | `<node 安装目录>\node.exe` |
 | `SWITCHER_PORT`   | TCP port (default `2325`)                     | `2400`                  |
 
 Examples (PowerShell):
@@ -49,7 +49,7 @@ Examples (bash):
 ## Auto-detection order per slot
 
 1. Explicit env var (only used if `openclaw.json` exists inside it)
-2. Machine-known Windows convention (`D:\openclaw\...`)
+2. Machine-known Windows convention (`<盘符>:\openclaw\...`)
 3. OS default (Linux/macOS: `~/.openclaw`, `/opt/openclaw`, etc.)
 4. CWD-relative fallback
 
@@ -83,45 +83,56 @@ models that are still real, still assigned, or both.
 
 ## Agent 模板机制
 
-「新建 Agent」的模板是 **workspace 下的预设目录**，不是内置内容：
+「新建 Agent」的模板来源（按查找顺序）：
 
-1. 模板查找顺序：`OPENCLAW_WS/_templates/<模板名>`（集中模板目录）→ 回退 `OPENCLAW_WS/<模板名>`（老模板，如 `comfyui` 是真实 agent 目录）
-2. 创建时把模板目录里的 `AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md` 复制到新 agent 工作区
-3. `MEMORY.md` **不复制**（模板目录里的是运行记忆），新 agent 从空记忆开始
-4. 模板目录不存在时返回 400，不会静默创建空白 agent
-5. 模板与 agent 工作区同名空间隔离：模板放 `_templates/` 下，所以你可以创建 `id=coding` 这类与模板同名的 agent
+1. `<switcher 安装目录>/templates/<模板名>` —— **内置推荐模板**（随包分发，下表）
+2. `OPENCLAW_WS/_templates/<模板名>` —— 自定义集中模板目录
+3. 现存 Agent 配置里的 workspace —— 可以把现有 agent 当模板
+4. `OPENCLAW_WS/<模板名>` —— 兜底
 
-内置模板：
+创建时把模板目录里的 `AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md` 复制到新 agent 工作区；
+`MEMORY.md` **不复制**（模板目录里的是运行记忆），新 agent 从空记忆开始。
+
+内置推荐模板（`templates/`，中文标签取自各模板 IDENTITY.md 的 Name 行）：
 
 | 模板 | 用途 |
 |------|------|
-| `comfyui` | 画图 / ComfyUI 工作流（`OPENCLAW_WS` 根目录，真实 agent 目录） |
-| `toutiao` | 头条热点文章（同上） |
-| `novel` | 小说创作（同上） |
-| `manju` | 漫剧（同上） |
-| `video` | 短视频脚本 / 分镜 / 口播稿（`_templates/` 下） |
-| `xhs` | 小红书笔记（`_templates/` 下） |
-| `wechat` | 公众号长文（`_templates/` 下） |
-| `coding` | 编程开发 / 自动化脚本（`_templates/` 下） |
-| `research` | 调研与报告（`_templates/` 下） |
+| `all-rounder` | 全能专家 |
+| `ceo-assistant` | 总助秘书 |
+| `coding` | 编程开发助手 |
+| `data-analyst` | 数据分析师 |
+| `design` | 设计顾问 |
+| `ecommerce` | 电商运营 |
+| `finance` | 财务分析 |
+| `health` | 健康顾问 |
+| `law` | 法律助手 |
+| `research` | 调研分析师 |
+| `seo` | SEO 优化师 |
+| `social-media` | 社媒运营 |
+| `support` | 客服专家 |
+| `teacher` | 教育辅导 |
+| `translator` | 专业翻译 |
+| `video` | 视频编导 |
+| `wechat` | 深度内容编辑 |
+| `xhs` | 小红书笔记操盘手 |
 
 自定义模板：在 `OPENCLAW_WS/_templates/` 下建一个目录，放入上述 .md 文件即可，
-前端下拉加一行 `<option value="你的目录名">`（或直接用 API 传 `workspaceTemplate`）。
+前端下拉会自动出现（推荐模板区），或直接用 API 传 `workspaceTemplate`。
 
 ## Diagnostic
 
     GET /api/status     # uptime, agent count, paths block
     GET /api/paths      # all resolved paths as JSON
 
-The bootstrap log prints the resolved paths:
+The bootstrap log prints the resolved paths (example output):
 
-    [paths] home=D:\openclaw\.openclaw
-    [paths] ws=D:\openclaw\workspace
-    [paths] agents=D:\openclaw\.openclaw\agents
-    [paths] cli=D:\nodejs\node_global\node_modules\openclaw\openclaw.mjs
-    [paths] feishu_reg=D:\nodejs\node_global\node_modules\openclaw\dist\app-registration-D-oqMP2f.js
-    [paths] port=2399
-    [Server: http://localhost:2399 (pid=N)]
+    [paths] home=<openclaw home>\.openclaw
+    [paths] ws=<workspace 目录>
+    [paths] agents=<openclaw home>\agents
+    [paths] cli=<npm 全局目录>\node_modules\openclaw\openclaw.mjs
+    [paths] feishu_reg=<npm 全局目录>\node_modules\openclaw\dist\app-registration-*.js
+    [paths] port=2325
+    [Server: http://localhost:2325 (pid=N)]
 
 ## Files in this directory
 
@@ -175,7 +186,7 @@ CLI-required (return 503 when CLI missing):
 ## Auto-start on Windows login
 
 Run `install-task.ps1` once with admin via the OpenClaw scheduled task
-(`START IN ADMIN POWERSHELL`, run `D:\openclaw\workspace\model-switcher\install-task.ps1`,
+(`START IN ADMIN POWERSHELL`, run `<源码目录>\install-task.ps1`,
 then click Yes on the UAC prompt). It registers `OpenClawModelSwitcher`
 to start on user logon with auto-restart on failure.
 

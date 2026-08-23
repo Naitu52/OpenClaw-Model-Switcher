@@ -62,7 +62,7 @@ echo   OpenClaw detection (pre-install):
 set "HINT_HOME="
 set "HINT_CLI="
 set "HINT_CFG="
-if exist "D:\openclaw\.openclaw\openclaw.json" (set "HINT_HOME=D:\openclaw\.openclaw" & set "HINT_CFG=D:\openclaw\.openclaw\openclaw.json")
+if exist "C:\openclaw\.openclaw\openclaw.json" (set "HINT_HOME=C:\openclaw\.openclaw" & set "HINT_CFG=C:\openclaw\.openclaw\openclaw.json")
 if not defined HINT_HOME if exist "%USERPROFILE%\.openclaw\openclaw.json" (set "HINT_HOME=%USERPROFILE%\.openclaw" & set "HINT_CFG=%USERPROFILE%\.openclaw\openclaw.json")
 if not defined HINT_HOME if exist "%LOCALAPPDATA%\openclaw\openclaw.json" (set "HINT_HOME=%LOCALAPPDATA%\openclaw" & set "HINT_CFG=%LOCALAPPDATA%\openclaw\openclaw.json")
 if not defined HINT_HOME (

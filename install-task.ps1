@@ -4,7 +4,8 @@
 
 $ErrorActionPreference = 'Stop'
 $taskName = "OpenClawModelSwitcher"
-$logPath  = "D:\openclaw\workspace\model-switcher\install-result.log"
+# 日志写到脚本同目录（便携：不硬编码本机路径）
+$logPath  = Join-Path $PSScriptRoot "install-result.log"
 
 function Log([string]$m) {
     $line = "$(Get-Date -Format 'HH:mm:ss.fff') $m"
