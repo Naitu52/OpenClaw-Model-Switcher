@@ -871,6 +871,19 @@ createApp({
       newAgent.value = {id:'',tpl:'comfyui',appId:'',appSecret:''};
       showCreate.value = true;
       if (typeof window !== 'undefined' && window.console) console.log('[openCreate] showCreate after=', showCreate.value);
+      // After Vue's next tick, check what the DOM actually contains.
+      if (typeof window !== 'undefined') {
+        Promise.resolve().then(() => {
+          const m = document.querySelector('.modal');
+          if (m) {
+            const cs = getComputedStyle(m);
+            const r = m.getBoundingClientRect();
+            console.log('[openCreate] nextTick: modal in DOM, display='+cs.display+' z='+cs.zIndex+' opacity='+cs.opacity+' top='+r.top+' height='+r.height+' text='+m.innerText.slice(0, 60));
+          } else {
+            console.log('[openCreate] nextTick: NO .modal in DOM (v-if did not render)');
+          }
+        });
+      }
     }
 
     async function createAgent(){
@@ -1178,6 +1191,31 @@ createApp({
           if (window.console) console.error('[unhandledrejection]', e.reason);
         }
       });
+      // Debug handles: paste these in DevTools console to inspect state directly.
+      // (Does not affect production behavior; just exposes refs.)
+      window.__dbg = {
+        showCreate, newAgent, providers, agents, status, authRequired, authToken,
+        showCreate, showAuthModal, showProviderEdit, showSaveScene, showFeishuBotModal, showGuidedBot,
+        openCreate, createAgent,
+        modals: () => {
+          const m = document.querySelectorAll('.modal');
+          return Array.from(m).map(el => ({
+            visible: el.offsetParent !== null,
+            display: getComputedStyle(el).display,
+            zIndex: getComputedStyle(el).zIndex,
+            opacity: getComputedStyle(el).opacity,
+            text: el.innerText.slice(0, 100),
+          }));
+        },
+        dumpModal: () => {
+          const ms = document.querySelectorAll('.modal');
+          console.log(`[__dbg.dumpModal] found ${ms.length} .modal elements in DOM:`);
+          ms.forEach((m, i) => {
+            const cs = getComputedStyle(m);
+            console.log(`  [${i}] v-if-showCreate=${m.outerHTML.includes('showCreate')} display=${cs.display} z=${cs.zIndex} opacity=${cs.opacity} top=${m.getBoundingClientRect().top} height=${m.getBoundingClientRect().height}`);
+          });
+        },
+      };
     }
 
     return{
