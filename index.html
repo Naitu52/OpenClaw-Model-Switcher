@@ -110,7 +110,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
 </style>
 </head>
 <body>
-<div id="app" class="c">
+<div id="switcher-app" class="c">
   <!-- Toast -->
   <div v-if="toast.show" class="toast" :class="toast.type">{{ toast.msg }}</div>
 
@@ -1271,7 +1271,7 @@ createApp({
       authRequired.value = !!j.required;
     } catch {}
   }
-}).mount('#app');
+}).mount('#switcher-app');
 </script>
 </body>
 </html>
