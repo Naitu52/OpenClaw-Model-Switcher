@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenClaw Model Switcher v6.3 - portable launcher (macOS / Linux)
+# OpenClaw Model Switcher v6.5.2 - portable launcher (macOS / Linux)
 #
 # Usage:
 #   ./启动Switcher.sh                              # default port 2325
@@ -14,19 +14,20 @@ set -e
 cd "$(dirname "$0")"
 
 echo
-echo "  Model Switcher v6.3 (portable)"
+echo "  Model Switcher v6.5.2 (portable)"
 echo "  =============================="
 echo
 
-# --- Node check ---
-if ! command -v node >/dev/null 2>&1; then
-    echo "  [X] Node.js 18+ required. Install from https://nodejs.org/"
+# --- Node check (OPENCLAW_NODE overrides PATH lookup) ---
+NODE_BIN="${OPENCLAW_NODE:-node}"
+if ! command -v "$NODE_BIN" >/dev/null 2>&1; then
+    echo "  [X] Node.js 18+ required. Install from https://nodejs.org/ or set OPENCLAW_NODE."
     echo
     read -rp "  Press any key to close..."
     exit 1
 fi
 
-NODE_VER=$(node --version)
+NODE_VER=$("$NODE_BIN" --version)
 NODE_MAJOR=${NODE_VER#v}
 NODE_MAJOR=${NODE_MAJOR%%.*}
 if [ "$NODE_MAJOR" -lt 18 ]; then
@@ -42,7 +43,7 @@ echo "  SWITCHER_PORT: ${SWITCHER_PORT:-2325}"
 echo
 
 # --- Launch ---
-node switcher.cjs
+"$NODE_BIN" switcher.cjs
 RC=$?
 
 if [ $RC -ne 0 ]; then

@@ -1,17 +1,15 @@
-{
-  "_comment": "Rename to scenes.json and edit to add your scenes. Each scene is a saved set of model->agent assignments that you can apply with one click.",
-  "scenes": [
-    {
-      "name": "Local-default (example)",
-      "timestamp": "2026-07-24 12:00:00",
-      "config": {
-        "main":    "minimax/MiniMax-M3",
-        "toutiao": "minimax/MiniMax-M3",
-        "comfyui": "openai/gpt-oss-20b",
-        "novel":   "minimax/MiniMax-M3",
-        "manju":   "openai/gpt-oss-20b",
-        "local":   "lmstudio/openai/gpt-oss-20b"
-      }
+[
+  {
+    "_comment": "Rename to scenes.json and edit to add your scenes. Each scene is a saved set of model->agent assignments that you can apply with one click. NOTE: this file must be a JSON ARRAY (the switcher reads it directly).",
+    "name": "Local-default (example)",
+    "timestamp": "2026-07-24 12:00:00",
+    "config": {
+      "main":    "minimax/MiniMax-M3",
+      "toutiao": "minimax/MiniMax-M3",
+      "comfyui": "openai/gpt-oss-20b",
+      "novel":   "minimax/MiniMax-M3",
+      "manju":   "openai/gpt-oss-20b",
+      "local":   "lmstudio/gpt-oss-20b"
     }
-  ]
-}
+  }
+]

@@ -1,4 +1,4 @@
-# OpenClaw Model Switcher v6 — Portable Edition
+# OpenClaw Model Switcher v6.5.2 — Portable Edition
 
 A self-contained Node.js web UI to manage OpenClaw agents, models, providers,
 and Feishu bot bindings. Reads/writes `openclaw.json` directly via atomic
@@ -81,10 +81,37 @@ In-use keys are always preserved, so an orphan can never break a live
 agent assignment. After prune, `agents.defaults.models` only contains
 models that are still real, still assigned, or both.
 
+## Agent 模板机制
+
+「新建 Agent」的模板是 **workspace 下的预设目录**，不是内置内容：
+
+1. 模板查找顺序：`OPENCLAW_WS/_templates/<模板名>`（集中模板目录）→ 回退 `OPENCLAW_WS/<模板名>`（老模板，如 `comfyui` 是真实 agent 目录）
+2. 创建时把模板目录里的 `AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md` 复制到新 agent 工作区
+3. `MEMORY.md` **不复制**（模板目录里的是运行记忆），新 agent 从空记忆开始
+4. 模板目录不存在时返回 400，不会静默创建空白 agent
+5. 模板与 agent 工作区同名空间隔离：模板放 `_templates/` 下，所以你可以创建 `id=coding` 这类与模板同名的 agent
+
+内置模板：
+
+| 模板 | 用途 |
+|------|------|
+| `comfyui` | 画图 / ComfyUI 工作流（`OPENCLAW_WS` 根目录，真实 agent 目录） |
+| `toutiao` | 头条热点文章（同上） |
+| `novel` | 小说创作（同上） |
+| `manju` | 漫剧（同上） |
+| `video` | 短视频脚本 / 分镜 / 口播稿（`_templates/` 下） |
+| `xhs` | 小红书笔记（`_templates/` 下） |
+| `wechat` | 公众号长文（`_templates/` 下） |
+| `coding` | 编程开发 / 自动化脚本（`_templates/` 下） |
+| `research` | 调研与报告（`_templates/` 下） |
+
+自定义模板：在 `OPENCLAW_WS/_templates/` 下建一个目录，放入上述 .md 文件即可，
+前端下拉加一行 `<option value="你的目录名">`（或直接用 API 传 `workspaceTemplate`）。
+
 ## Diagnostic
 
     GET /api/status     # uptime, agent count, paths block
-    GET /api/paths      # all resolved paths as JSON (planned, falls back if not implemented)
+    GET /api/paths      # all resolved paths as JSON
 
 The bootstrap log prints the resolved paths:
 
@@ -101,14 +128,13 @@ The bootstrap log prints the resolved paths:
 | File | Purpose |
 |------|---------|
 | `switcher.cjs`          | Node.js server (portable) |
-| `switcher.cjs.v1-original` | Pre-portable version, kept for rollback |
 | `index.html`            | Single-page frontend |
 | `启动Switcher.bat`        | Windows launcher (env vars documented inline) |
-| `启动Switcher.bat.legacy`  | Old launcher (pre-portable .bat) |
 | `install-task.ps1`       | Registers this as a Windows scheduled task |
 | `scenes.json`           | Your saved scene presets |
 | `backups/`              | Rolling 30 backups of `openclaw.json` |
 | `switcher.log`          | Boot + change log |
+| `scripts/write-shasums.js` | Regenerates `SHA256SUMS` for the tarballs |
 
 ## Endpoints
 

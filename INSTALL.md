@@ -18,12 +18,12 @@ If global install fails: right-click the bat and "Run as Administrator".
 
 Requires Node.js 18+ (already required by OpenClaw itself).
 
-    # From local tarball
-    npm install -g ./openclaw-model-switcher-6.1.0.tgz
+    # From local tarball (use the newest openclaw-model-switcher-*.tgz in the dir)
+    npm install -g ./openclaw-model-switcher-6.5.2.tgz
     openclaw-switcher                # listens on 2325
 
     # Or unzip and run
-    tar xzf openclaw-model-switcher-6.1.0.tgz
+    tar xzf openclaw-model-switcher-6.5.2.tgz
     cd package/
     node switcher.cjs
 

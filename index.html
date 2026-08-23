@@ -46,7 +46,9 @@ input:focus,select:focus,textarea:focus{border-color:var(--accent)}
 body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--fg);padding:12px;transition:background .2s,color .2s}
 .c{max-width:1200px;margin:0 auto}
 .h1{font-size:20px;font-weight:600;margin-bottom:2px}
-.sub{font-size:12px;margin-bottom:10px;display:flex;gap:12px;flex-wrap:wrap;align-items:center}
+.sub{font-size:12px;margin-bottom:10px;display:flex;gap:14px;flex-wrap:wrap;align-items:center}
+.sub b{color:var(--fg);font-weight:700;font-family:monospace}
+.sub .lbl{display:inline-flex;align-items:baseline;gap:3px}
 .card{border-radius:12px;padding:12px 14px;margin-bottom:10px;box-shadow:0 1px 3px rgba(0,0,0,.07)}
 .hdr{font-size:14px;font-weight:600;margin-bottom:8px;display:flex;align-items:center;gap:8px}
 .hdr .badge{font-size:10px;padding:1px 6px;border-radius:4px;font-weight:500}
@@ -121,17 +123,18 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <div class="sub">
         <span v-if="loading" class="pulse">加载中...</span>
         <template v-else>
-          <span>{{ agents.length }} Agent</span>
-          <span>{{ models.length }} 模型</span>
-          <span>{{ providers.filter(p=>p.key).length }} Key</span>
-          <span v-if="status.port" style="font-family:monospace">:{{ status.port }}</span>
-          <span v-if="status.uptime" class="t">运行 {{ uptimeStr }}</span>
-          <span @click="refresh" style="cursor:pointer;color:var(--accent);margin-left:8px">⟳ 刷新</span>
+          <span class="lbl"><b>{{ agents.length }}</b><span>Agent</span></span>
+          <span class="lbl"><b>{{ models.length }}</b><span>模型</span></span>
+          <span class="lbl"><b>{{ providers.filter(p=>p.key).length }}</b><span>Key</span></span>
+          <span v-if="status.port" class="lbl" title="面板服务端口"><span>端口</span><b>{{ status.port }}</b></span>
+          <span v-if="status.uptime" class="lbl" title="面板已运行时间"><span>已运行</span><b>{{ uptimeStr }}</b></span>
+          <span @click="refresh" style="cursor:pointer;color:var(--accent);margin-left:4px">⟳ 刷新</span>
         </template>
       </div>
     </div>
     <div v-if="!loading" class="f" style="gap:6px;align-items:center">
-      <span class="tg tgb">v5</span>
+      <span class="tg tgb">v{{ status.version || '6.5.2' }}</span>
+      <button class="btn xs pri" @click="openInstallModal" title="安装 openclaw 前置环境与 openclaw 本体（可选安装位置/默认工作区）" data-btn="install">🛠 安装 openclaw</button>
       <button @click="toggleTheme" :title="'切换 ' + (theme==='dark'?'亮色':'暗色') + ' 模式'" style="background:transparent;border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">
         <span v-if="theme==='dark'">☀️</span>
         <span v-else>🌙</span>
@@ -151,38 +154,49 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
         <div class="ovi"><div class="v">{{ backups.length }}</div><div class="l">备份</div></div>
         <div class="ovi"><div class="v">{{ scenes.length }}</div><div class="l">场景</div></div>
       </div>
-      <div class="mt">
-        <table class="tbl">
-          <tr><th>Agent</th><th>模型</th><th>Workspace</th></tr>
-          <tr v-for="a in agents" :key="a.id" :class="{ flash: a._flashing }">
-            <td><strong>{{ a.id }}</strong></td>
-            <td style="font-family:monospace;font-size:10px">{{ short(a.model) }}</td>
-            <td style="font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</td>
-          </tr>
-        </table>
+      <div class="f mt" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+        <span style="font-size:12px;font-weight:600">🤖 Agent（{{ agents.length }}）</span>
+        <button class="btn pri xs" @click="openCreate" data-btn="create">+ 新建</button>
       </div>
-      <div class="mt f" style="justify-content:space-between;align-items:center;margin-bottom:6px">
-        <span style="font-size:11px;color:#6e6e73">已配置 ({{ providers.length }})</span>
-        <button class="btn xs" @click="refreshAllProviders" :disabled="refreshingAll || !providers.length" title="对每个已配 provider 调 /v1/models，覆盖本地列表 + 清理孤儿">
-          <span v-if="refreshingAll">⏳ 刷新中…</span>
-          <span v-else>🔄 全部刷新</span>
-        </button>
+      <div v-for="a in agents" :key="a.id" class="kr" :class="{flash: a._flashing}" :style="a.isDefault ? 'font-size:12px;padding:6px 0;gap:8px;color:#ff6b6b;font-weight:600' : 'font-size:12px;padding:6px 0;gap:8px'">
+        <span style="font-weight:600;width:130px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="a.name && a.name !== a.id ? a.id+'（'+a.name+'）' : a.id">{{ a.id }}<template v-if="a.name && a.name !== a.id"><span style="color:#86868b;font-weight:400;margin-left:4px">（{{ a.name }}）</span></template><template v-if="a.isDefault"><span style="color:#ff6b6b;margin-left:6px" title="默认 Agent（未指定 agent 时路由/工作区根）">★默认</span></template></span>
+        <span style="flex:1;font-size:10px;color:#6e6e73;font-family:monospace">{{ short(a.model) }}</span>
+        <span style="flex:1;font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</span>
+        <button v-if="a.workspace" class="btn xs sec" @click="openFolder(a.workspace)" :title="'在资源管理器中打开工作区 ' + a.workspace">📂</button>
+        <button class="btn xs sec" @click="openAgentEditModal(a)" title="编辑 Agent（名称/默认模型/默认标记）">✏️</button>
+        <span style="display:flex;gap:4px;align-items:center;flex-shrink:0">
+          <button class="btn xs" :style="toolDenied(a,'cron') ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a2e1e;color:#ffd43b'"
+                  @click="toggleTool(a,'cron')"
+                  :title="toolDenied(a,'cron') ? 'cron 已禁用 — 点击启用（注意：LM Studio 模型会因 cron 的 schema 报 400）' : 'cron 已启用 — 点击禁用（用 LM Studio 模型时建议禁用）'">
+            {{ toolDenied(a,'cron') ? '🔒 cron 禁用' : 'cron 启用 ⚠️' }}
+          </button>
+          <span v-if="otherDenied(a).length" style="font-size:9px;color:#86868b" :title="'其他禁用: ' + otherDenied(a).join(', ')">
+            -{{ otherDenied(a).join(',') }}
+          </span>
+        </span>
+        <button class="btn xs sec" @click="openTemplateModal(a)" title="切换模板（慎用：覆盖 AGENTS.md 等模板文件并重置记忆）">🧩 模板</button>
+        <button class="btn xs dng" @click="deleteAgent(a.id)" style="margin-left:4px">删除</button>
       </div>
-      <div>
-        <table class="tbl">
-          <tr><th>提供商</th><th>Base URL</th><th>Key</th><th>模型数</th><th>操作</th></tr>
-          <tr v-for="p in providers" :key="p.id">
-            <td>{{ p.id }}</td>
-            <td style="font-size:10px;color:#6e6e73">{{ p.baseUrl }}</td>
-            <td style="font-family:monospace">{{ p.key || '-' }}</td>
-            <td>{{ p.models.length }}</td>
-            <td style="white-space:nowrap">
-              <button class="btn xs" @click="editProvider(p)" title="编辑">✏️</button>
-              <button class="btn xs dan" @click="deleteProvider(p)" title="删除">🗑️</button>
-            </td>
-          </tr>
-          <tr v-if="!providers.length"><td colspan="5" style="text-align:center;padding:8px;color:#86868b">无提供商 — 去「配Key」添加</td></tr>
-        </table>
+      <div class="f mt" style="justify-content:space-between;align-items:center;border-top:1px solid var(--soft2);padding-top:8px">
+        <span style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0">
+          📁 openclaw 默认工作区
+          <span class="t" style="font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">{{ status.defaultWorkspace || '-' }}</span>
+          <span v-if="!status.defaultWorkspaceExplicit" style="font-size:10px;color:#ffd43b">（openclaw 内置默认）</span>
+        </span>
+        <span class="f" style="gap:4px">
+          <button class="btn xs sec" @click="openFolder(status.defaultWorkspace)" title="在资源管理器中打开默认工作区" :disabled="!status.defaultWorkspace">📂</button>
+          <button class="btn xs sec" @click="openDefaultWsModal" title="变更 openclaw 默认工作区（只改配置，不迁移目录）">✏️ 变更</button>
+        </span>
+      </div>
+      <div class="f mt" style="justify-content:space-between;align-items:center;border-top:1px solid var(--soft2);padding-top:8px">
+        <span style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0">
+          ⬆️ openclaw 版本
+          <span class="t" style="font-family:monospace">{{ ocInfo.current || '-' }}</span>
+          <span class="t" style="font-family:monospace;font-size:10px;color:#86868b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="ocInfo.packagePath">{{ short(ocInfo.packagePath) }}</span>
+          <span v-if="ocInfo.hasUpdate" style="font-size:10px;color:#ffd43b">（可更新至 {{ ocInfo.latest }}）</span>
+          <span v-else-if="ocInfo.latest" style="font-size:10px;color:#34c759">（已是最新）</span>
+        </span>
+        <button class="btn xs sec" @click="openOcUpdateModal" title="检查并更新 openclaw 本体（npm 全局包，可选历史版本）">⬆️ 更新</button>
       </div>
     </template>
   </div>
@@ -209,9 +223,10 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
           <div class="an">{{ a.id }}</div>
           <div class="acur">当前：{{ short(a.model) }}</div>
           <select v-model="a._sel" @change="a._ch=(a._sel!==a.model)">
-            <optgroup v-for="g in groups" :key="g.n" :label="g.n">
+            <optgroup v-for="g in filteredGroups" :key="g.n" :label="g.n">
               <option v-for="m in g.ms" :key="m.k" :value="m.k">{{ m.s }}</option>
             </optgroup>
+            <option v-if="a.model && !filteredGroups.some(g=>g.ms.some(m=>m.k===a.model))" :value="a.model" style="color:#86868b">{{ short(a.model) }}（当前，供应商未配 Key 或不在筛选中）</option>
           </select>
         </div>
       </div>
@@ -222,22 +237,52 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
           </button>
           <button class="btn sec xs" @click="resetSelection">重置</button>
         </div>
-        <div v-if="msg" :class="msgOk?'o':'e'" style="font-size:12px">{{ msg }}</div>
       </div>
     </template>
   </div>
 
-  <!-- 配Key -->
+  <!-- 配置模型（合并：已配供应商表 + 添加/验证） -->
   <div class="card">
-    <div class="hdr">🔑 配Key</div>
-    <div class="f g2">
-      <select v-model="kf.provider" style="max-width:160px">
+    <div class="f" style="justify-content:space-between">
+      <div class="hdr">🔑 配置模型</div>
+      <button class="btn xs" @click="refreshAllProviders" :disabled="refreshingAll || !providers.length" title="对每个已配 provider 调 /v1/models，覆盖本地列表 + 清理孤儿">
+        <span v-if="refreshingAll">⏳ 刷新中…</span>
+        <span v-else>🔄 全部刷新</span>
+      </button>
+    </div>
+    <div class="f" style="justify-content:space-between;align-items:center;margin-bottom:6px">
+      <span style="font-size:11px;color:#6e6e73">已配置供应商（{{ providers.length }}）</span>
+    </div>
+    <table class="tbl">
+      <tr><th>供应商</th><th>Base URL</th><th>Key</th><th>模型数</th><th>操作</th></tr>
+      <tr v-for="p in providers" :key="p.id">
+        <td>{{ p.id }}</td>
+        <td style="font-size:10px;color:#6e6e73">{{ p.baseUrl }}</td>
+        <td style="font-family:monospace">{{ p.key || '-' }}</td>
+        <td>{{ p.models.length }}</td>
+        <td style="white-space:nowrap">
+          <button class="btn xs" @click="editProvider(p)" title="编辑">✏️</button>
+          <button class="btn xs dan" @click="deleteProvider(p)" title="删除">🗑️</button>
+        </td>
+      </tr>
+      <tr v-if="!providers.length"><td colspan="5" style="text-align:center;padding:8px;color:#86868b">暂无已配置供应商 — 在下方添加</td></tr>
+    </table>
+    <div class="mt f g2" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--soft2)">
+      <select v-model="kf.provider" style="max-width:190px">
         <option value="">选供应商</option>
-        <option v-for="p in catalog" :key="p.id" :value="p.id">{{ p.name }}</option>
+        <option v-for="p in availProviders" :key="p.id" :value="p.id">{{ p.id }}{{ p.configured ? ' ✓已配' : '' }} ({{ p.count }})</option>
+        <option value="__custom__">➕ 自定义供应商</option>
       </select>
-      <input v-model="kf.apiKey" type="password" placeholder="API Key" style="flex:1.2">
-      <input v-model="kf.baseUrl" placeholder="Base URL (可选)" style="flex:1">
-      <button class="btn scc" @click="probe" :disabled="!kf.provider||!kf.apiKey||kl">
+      <template v-if="kf.provider==='__custom__'">
+        <input v-model="kf.customId" placeholder="供应商 ID（如 my-gateway）" style="max-width:150px">
+        <input v-model="kf.customBaseUrl" placeholder="Base URL（如 http://host:port/v1）" style="flex:1">
+        <input v-model="kf.apiKey" type="password" placeholder="API Key" style="flex:1.2">
+      </template>
+      <template v-else>
+        <input v-model="kf.apiKey" type="password" placeholder="API Key" style="flex:1.2">
+        <input v-model="kf.baseUrl" placeholder="Base URL (可选)" style="flex:1">
+      </template>
+      <button class="btn scc" @click="probe" :disabled="probeDisabled || kl">
         {{ kl ? '验证中...' : '🔍 验证' }}
       </button>
     </div>
@@ -246,38 +291,30 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
-  <!-- Agent管理 -->
-  <div class="card">
-    <div class="f" style="justify-content:space-between">
-      <div class="hdr">🤖 Agent管理</div>
-      <button class="btn pri xs" @click="openCreate" data-btn="create">+ 新建</button>
-    </div>
-    <div class="kr" v-for="a in agents" :key="a.id" style="font-size:12px;padding:6px 0">
-      <span style="font-weight:600;width:80px">{{ a.id }}</span>
-      <span style="flex:1;font-size:10px;color:#6e6e73;font-family:monospace">{{ short(a.model) }}</span>
-      <span style="flex:1;font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</span>
-      <button class="btn xs dng" @click="deleteAgent(a.id)" style="margin-left:auto">删除</button>
-    </div>
-  </div>
-
   <!-- 文件浏览器 -->
   <div class="card">
     <div class="hdr">📁 文件浏览器</div>
     <div class="f mb">
-      <select v-model="fileAgent" style="max-width:160px" @change="loadFiles">
+      <select v-model="fileAgent" style="max-width:160px" @change="filePath='';loadFiles()">
         <option value="">选Agent</option>
         <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.id }}</option>
       </select>
-      <span class="t">{{ fileList.length }} 文件</span>
+      <button class="btn xs sec" @click="goUp" :disabled="!filePath" title="返回上级">⬆ 上级</button>
+      <span class="t" style="font-family:monospace">📁 {{ filePath || '/' }}</span>
+      <span class="t">{{ fileList.files?.length || 0 }} 文件 / {{ fileList.dirs?.length || 0 }} 目录</span>
+      <span v-if="fileList.truncated" style="color:#ffd43b;font-size:10px" title="目录过大，仅显示前 400 项">⚠️ 已截断</span>
       <input v-model="fileFilter" placeholder="过滤..." style="max-width:160px;font-size:11px" @input="filterFiles">
     </div>
     <div v-if="fileAgent" class="fv">
       <div class="fl">
+        <div v-for="d in fileList.dirs || []" :key="'d-'+d" class="fi" @click="enterDir(d)">
+          <span>📁 {{ d }}</span>
+        </div>
         <div v-for="f in filteredFiles" :key="f.path" class="fi" :class="{a:f.path===selectedFile}" @click="loadFileContent(f.path)">
           <span>{{ f.name }}</span>
           <span style="font-size:9px;color:#86868b">{{ sz(f.size) }}</span>
         </div>
-        <div v-if="!fileList.length" style="padding:12px;text-align:center;color:#86868b;font-size:11px">无文件</div>
+        <div v-if="!(fileList.files||[]).length && !(fileList.dirs||[]).length" style="padding:12px;text-align:center;color:#86868b;font-size:11px">无文件</div>
       </div>
       <div class="fr">
         <div v-if="fileContent!==null" style="height:100%;display:flex;flex-direction:column">
@@ -300,18 +337,23 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div class="card">
     <div class="f" style="justify-content:space-between">
       <div class="hdr">💾 备份 <span class="badge tggy">{{ backups.length }}</span></div>
-      <button class="btn xs sec" @click="loadBackups">⟳</button>    </div>
+      <div class="f" style="gap:4px">
+        <button class="btn xs scc" @click="manualBackup" :disabled="backingUp">{{ backingUp ? '备份中...' : '💾 手动备份' }}</button>
+        <button class="btn xs sec" @click="loadBackups">⟳</button>
+      </div>
+    </div>
     <div style="font-size:10px;color:#86868b;margin:2px 0 6px 0;word-break:break-all;line-height:1.4">
       实际目录: <span style="font-family:monospace;color:#1d1d1f">{{ paths.backupDir || '加载中...' }}</span>
       <button class="btn xs scc" style="margin-left:6px;padding:1px 6px" @click="openFolder(paths.backupDir)" :disabled="!paths.backupDir">📂 打开</button>
     </div>
-    <div class="kr" v-for="b in backups" :key="b.name">
-    </div>
-    <div class="kr" v-for="b in backups" :key="b.name">
+    <div class="kr" v-for="b in showAllBackups ? backups : backups.slice(0,10)" :key="b.name">
       <span style="font-size:10px;color:#86868b;width:150px">{{ b.time }}</span>
       <span style="font-size:11px;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace">{{ b.name }}</span>
       <span style="font-size:10px;color:#86868b;width:60px;text-align:right">{{ b.size ? sz(b.size) : '' }}</span>
       <button class="btn xs sec" @click="rollback(b)">回滚</button>
+    </div>
+    <div v-if="backupTotal > 10" style="text-align:center;padding:4px">
+      <button class="btn xs sec" @click="toggleAllBackups">{{ showAllBackups ? '▲ 收起' : `▼ 显示全部（共 ${backupTotal} 份）` }}</button>
     </div>
     <div v-if="!backups.length" style="text-align:center;padding:6px;color:#86868b;font-size:11px">无备份</div>
   </div>
@@ -327,6 +369,9 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
         <div :class="l.includes('ERROR')||l.includes('ERR')?'err':l.includes('OK')||l.includes('Switch')||l.includes('Create')?'ok':''">{{ l }}</div>
       </template>
       <div v-if="!logs.length" style="color:#6e6e73">暂无</div>
+    </div>
+    <div style="text-align:center;padding:4px">
+      <button class="btn xs sec" @click="loadMoreLogs">📄 加载更多</button>
     </div>
   </div>
 
@@ -345,22 +390,6 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     <div v-if="!scenes.length" style="text-align:center;padding:6px;color:#86868b;font-size:11px">无场景 — 保存当前配置为场景</div>
   </div>
 
-  <!-- 供应商目录 -->
-  <div class="card">
-    <div class="hdr">🏪 供应商目录</div>
-    <div class="ag" style="grid-template-columns:repeat(auto-fill,minmax(240px,1fr))">
-      <div v-for="p in catalog" :key="p.id" style="background:#f5f5f7;border-radius:8px;padding:8px 10px">
-        <div class="f" style="justify-content:space-between;margin-bottom:4px">
-          <span style="font-weight:600;font-size:12px">{{ p.name }}</span>
-          <span v-if="p.hasKey" class="tg tgg">已配Key</span>
-          <span v-else class="tg tggy">未配</span>
-        </div>
-        <div style="font-size:10px;color:#6e6e73;font-family:monospace;margin-bottom:2px">{{ p.baseUrl }}</div>
-        <div style="font-size:10px;color:#86868b">{{ p.modelCount }} 模型</div>
-      </div>
-    </div>
-  </div>
-
   <!-- 飞书 Bot 管理 -->
   <div class="card">
     <div class="f" style="justify-content:space-between">
@@ -371,71 +400,85 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
         <button class="btn sec xs" @click="loadFeishu">⟳</button>
       </div>
     </div>
-    <div v-if="!feishu.accounts||!Object.keys(feishu.accounts).length" style="text-align:center;padding:12px;color:#86868b;font-size:11px">暂无 Bot — 点击「添加 Bot」配置飞书机器人</div>
-    <div v-else>
-      <div v-for="(info,key) in feishu.accounts" :key="key" style="background:#f5f5f7;border-radius:10px;padding:10px 12px;margin-bottom:6px">
+    <div v-if="!agents.length" style="text-align:center;padding:12px;color:#86868b;font-size:11px">暂无 Agent — 先创建 Agent 再配置飞书 Bot</div>
+    <div v-else style="display:grid;grid-template-columns:repeat(auto-fill,minmax(360px,1fr));gap:8px">
+      <!-- 每个 Agent 一张卡片：有 bot 显示 Bot 信息+白名单，无 bot 显示未配置 -->
+      <div v-for="fa in feishuAgents" :key="fa.agent.id" style="background:#f5f5f7;border-radius:10px;padding:10px 12px;min-height:140px;display:flex;flex-direction:column">
         <div class="f" style="justify-content:space-between;margin-bottom:6px">
           <div class="f" style="gap:8px">
-            <span style="font-weight:600;font-size:13px">{{ info.name || key }}</span>
-            <span class="tg" :class="info.enabled?'tgg':'tgr'">{{ info.enabled ? '启用' : '禁用' }}</span>
-            <span v-if="diagFor(key)" class="tg" :class="diagFor(key).connected?'tgg':'tgr'" :title="diagFor(key).status">{{ diagFor(key).connected ? '🟢 已连' : '🔴 断连' }}</span>
+            <span style="font-weight:600;font-size:13px">{{ fa.agent.id }}</span>
+            <template v-if="fa.bot">
+              <span class="tg" :class="fa.bot.enabled?'tgg':'tgr'">{{ fa.bot.enabled ? '启用' : '禁用' }}</span>
+              <span v-if="diagFor(fa.botKey)" class="tg" :class="diagFor(fa.botKey).connected?'tgg':'tgr'" :title="diagFor(fa.botKey).status">{{ diagFor(fa.botKey).connected ? '🟢 已连' : '🔴 断连' }}</span>
+            </template>
+            <span v-else class="tg tggy">未配置</span>
           </div>
           <div class="f" style="gap:4px">
-            <button class="btn xs sec" @click="openFeishuBotModal(key,info)">编辑</button>
-            <button class="btn xs dng" @click="deleteFeishuBot(key)">删除</button>
+            <template v-if="fa.bot">
+              <button class="btn xs sec" @click="openFeishuBotModal(fa.botKey,fa.bot)">编辑</button>
+              <button class="btn xs dng" @click="deleteFeishuBot(fa.botKey)">删除</button>
+            </template>
+            <button v-else class="btn xs sec" @click="openFeishuBotModalFor(fa.agent)">+ 配置 Bot</button>
           </div>
         </div>
-        <div style="font-size:11px;color:#6e6e73;display:grid;grid-template-columns:80px 1fr;gap:2px 8px">
-          <span>App ID</span><span style="font-family:monospace">{{ info.appId || '-' }}</span>
-          <span>Secret</span><span style="font-family:monospace">{{ info.hasSecret ? info.appSecret : '未设置' }}</span>
-          <span>路由</span><span>{{ getFeishuBinding(key) || '未绑定' }}</span>
-        </div>
+        <template v-if="fa.bot">
+          <!-- 白名单（与 bot 一一对应） -->
+          <div style="margin-bottom:6px">
+            <div style="margin-bottom:3px">
+              <span style="font-size:11px;font-weight:500;color:var(--muted)">白名单 ID <span class="tg" :class="fa.bot.allowCount>0?'tgg':'tgr'">{{ fa.bot.allowCount }} 个</span></span>
+            </div>
+            <div v-if="fa.bot.allowFrom.length" style="font-size:10px;font-family:monospace;color:#6e6e73">
+              <div v-for="id in fa.bot.allowFrom" :key="id" class="f" style="padding:1px 0">
+                <span style="flex:1;overflow:hidden;text-overflow:ellipsis">{{ id }}</span>
+                <button class="btn xs dng" @click="removeAllowFrom(id,fa.botKey)" style="padding:0 4px;font-size:9px">×</button>
+              </div>
+            </div>
+            <div v-else style="font-size:10px;color:#86868b;font-style:italic">无白名单（默认拒绝）</div>
+          </div>
+          <div style="font-size:11px;color:#6e6e73;display:grid;grid-template-columns:80px 1fr;gap:2px 8px">
+            <span>App ID</span><span style="font-family:monospace">{{ fa.bot.appId || '-' }}</span>
+            <span>Secret</span><span style="font-family:monospace">{{ fa.bot.hasSecret ? fa.bot.appSecret : '未设置' }}</span>
+            <span>路由</span><span>{{ getFeishuBinding(fa.botKey) || '未绑定' }}</span>
+          </div>
+        </template>
+        <div v-else style="font-size:11px;color:#86868b;padding:4px 0;flex:1;display:flex;align-items:center">该 Agent 未绑定飞书 Bot — 点击「+ 配置 Bot」创建并绑定</div>
       </div>
     </div>
-    <!-- allowFrom 白名单 -->
-    <div class="mt">
-      <div class="f" style="justify-content:space-between;margin-bottom:6px">
-        <span style="font-size:12px;font-weight:600">白名单 (各 Bot 独立)</span>
-        <button class="btn xs sec" @click="showAllowFromModal=true">+ 全局添加</button>
+    <!-- 全局默认白名单（精简） -->
+    <div v-if="feishu.allowFrom&&feishu.allowFrom.length" style="margin-top:4px;padding-top:6px;border-top:1px solid var(--soft2)">
+      <div class="f" style="justify-content:space-between;margin-bottom:3px">
+        <span style="font-size:11px;font-weight:500;color:var(--muted)">全局默认白名单 <span class="tg tgb">{{ feishu.allowFrom.length }}</span></span>
+        <button class="btn xs sec" @click="showAllowFromModal=true;allowFromScope=''" style="padding:1px 6px;font-size:9px">+ 添加</button>
       </div>
-      <!-- 每个 bot 自己的白名单 -->
-      <div v-for="(info,key) in feishu.accounts" :key="'allow-'+key" style="margin-bottom:6px;padding:6px 8px;background:#f5f5f7;border-radius:6px">
-        <div class="f" style="justify-content:space-between;margin-bottom:4px">
-          <span style="font-size:11px;font-weight:500">{{ info.name||key }}</span>
-          <div class="f" style="gap:4px">
-            <span class="tg" :class="info.allowCount>0?'tgg':'tgr'">{{ info.allowCount }} 用户</span>
-            <button class="btn xs sec" @click="openBotAllowFrom(key,info)" style="padding:1px 6px;font-size:9px">+</button>
-          </div>
-        </div>
-        <div v-if="info.allowFrom.length" style="font-size:10px;font-family:monospace;color:#6e6e73;max-height:60px;overflow-y:auto">
-          <div v-for="id in info.allowFrom" :key="id" class="f" style="padding:1px 0">
-            <span style="flex:1;overflow:hidden;text-overflow:ellipsis">{{ id }}</span>
-            <button class="btn xs dng" @click="removeAllowFrom(id,key)" style="padding:0 4px;font-size:9px">×</button>
-          </div>
-        </div>
-        <div v-else style="font-size:10px;color:#86868b;font-style:italic">该 bot 无独立白名单（使用默认拒绝）</div>
-      </div>
-      <!-- 全局白名单 -->
-      <div v-if="feishu.allowFrom&&feishu.allowFrom.length" style="margin-top:6px">
-        <div style="font-size:11px;font-weight:500;margin-bottom:4px">全局默认白名单 <span class="tg tgb">{{ feishu.allowFrom.length }}</span></div>
-        <div style="font-size:10px;font-family:monospace;color:#6e6e73">
-          <div v-for="id in feishu.allowFrom" :key="'g-'+id" class="f" style="padding:1px 0">
-            <span style="flex:1">{{ id }}</span>
-            <button class="btn xs dng" @click="removeAllowFrom(id)">×</button>
-          </div>
+      <div style="font-size:10px;font-family:monospace;color:#6e6e73">
+        <div v-for="id in feishu.allowFrom" :key="'g-'+id" class="f" style="padding:1px 0">
+          <span style="flex:1">{{ id }}</span>
+          <button class="btn xs dng" @click="removeAllowFrom(id)" style="padding:0 4px;font-size:9px">×</button>
         </div>
       </div>
     </div>
   </div>
 
   <!-- Modal: 飞书 Bot 编辑 -->
-  <div v-if="showFeishuBotModal" class="modal" @click.self="showFeishuBotModal=false">
+  <div v-if="showFeishuBotModal" class="modal modal-open" @click.self="showFeishuBotModal=false">
     <div class="mc">
       <h3>{{ feishuBotForm._edit ? '编辑' : '添加' }} 飞书 Bot</h3>
       <label class="mlabel">Bot Key *</label>
       <input v-model="feishuBotForm.botKey" :disabled="feishuBotForm._edit" placeholder="例: audio_bot">
       <label class="mlabel">显示名</label>
       <input v-model="feishuBotForm.name" placeholder="例: audio">
+      <label class="mlabel">白名单 ID（{{ feishuBotAllowFrom.length }} 个）</label>
+      <div style="font-size:10px;font-family:monospace;color:#6e6e73;background:#f5f5f7;border-radius:6px;padding:6px 8px;max-height:100px;overflow-y:auto">
+        <div v-for="id in feishuBotAllowFrom" :key="id" class="f" style="padding:1px 0">
+          <span style="flex:1;overflow:hidden;text-overflow:ellipsis">{{ id }}</span>
+          <button class="btn xs dng" @click="removeBotAllowFrom(id)" style="padding:0 4px;font-size:9px">×</button>
+        </div>
+        <div v-if="!feishuBotAllowFrom.length" style="color:#86868b;font-style:italic">无白名单（默认拒绝）</div>
+      </div>
+      <div class="f" style="gap:4px;margin-top:4px">
+        <input v-model="botAllowFromInput" placeholder="ou_xxxxxxx" style="flex:1;font-family:monospace;font-size:10px" @keyup.enter="addBotAllowFrom">
+        <button class="btn xs sec" @click="addBotAllowFrom" :disabled="!botAllowFromInput.trim()">+ 添加</button>
+      </div>
       <label class="mlabel">App ID *</label>
       <input v-model="feishuBotForm.appId" placeholder="cli_xxxxxx">
       <label class="mlabel">App Secret {{ feishuBotForm._edit ? '(留空不修改)' : '*' }}</label>
@@ -456,7 +499,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: 扫码创建 Bot -->
-  <div v-if="showGuidedBot" class="modal" @click.self="showGuidedBot=false">
+  <div v-if="showGuidedBot" class="modal modal-open" @click.self="showGuidedBot=false">
     <div class="mc" style="width:540px">
       <h3>📱 扫码创建飞书 Bot</h3>
       <div class="t mb" style="font-size:11px;line-height:1.6">走 openclaw 内置 OAuth 授权，全程 <strong>30 秒</strong>，无需手动添权限。</div>
@@ -508,7 +551,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <!-- 选择保存选项 -->
       <div v-if="reg.status==='done'" style="background:#f5f5f7;border-radius:8px;padding:10px;margin-bottom:8px">
         <label class="mlabel">账号 ID (botKey)</label>
-        <input v-model="regBotKey" placeholder="默认从 appId 自动生成">
+        <input v-model="regBotKey" placeholder="默认用 Agent 名生成 (如 coding_bot)">
         <label class="mlabel">绑定 Agent</label>
         <select v-model="guidedBot.agentId">
           <option value="">不绑定（手动绑定）</option>
@@ -526,7 +569,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
 <!-- Modal: 添加白名单 -->
-  <div v-if="showAllowFromModal" class="modal" @click.self="showAllowFromModal=false">
+  <div v-if="showAllowFromModal" class="modal modal-open" @click.self="showAllowFromModal=false">
     <div class="mc">
       <h3>添加白名单 open_id</h3>
       <label class="mlabel">open_id</label>
@@ -545,8 +588,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: 通用确认 (替代 confirm()) -->
-  <div v-if="confirmDialog.show" class="modal" @click.self="confirmDialog.show=false;confirmDialog._resolve?.(false)">
-    <div class="mc" style="max-width:480px">
+  <div v-if="confirmDialog.show" class="modal modal-open" @click.self="confirmDialog.show=false;confirmDialog._resolve?.(false)">
     <div class="mc" style="max-width:480px">
       <h3 style="margin-top:0">{{ confirmDialog.title }}</h3>
       <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;padding:6px 0;color:#222">{{ confirmDialog.body }}</div>
@@ -558,7 +600,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: Token 输入 (auth 必需时) -->
-  <div v-if="showAuthModal" class="modal" style="z-index:300">
+  <div v-if="showAuthModal" class="modal modal-open" style="z-index:300">
     <div class="mc" style="max-width:480px">
       <h3 style="margin-top:0">🔐 需要 Token</h3>
       <div style="font-size:13px;line-height:1.5;color:#222;padding:6px 0">
@@ -567,8 +609,99 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <label class="mlabel">Bearer Token</label>
       <input v-model="authModalData.value" placeholder="粘到 SWITCHER_TOKEN" @keyup.enter="confirmAuthToken" autofocus>
       <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn sec" @click="clearAuthToken" :disabled="!authToken" title="清掉浏览器里存的旧 Token 并重试">清除已存 Token</button>
         <button class="btn sec" @click="cancelAuthToken">取消</button>
         <button class="btn pri" @click="confirmAuthToken" :disabled="!authModalData.value">确认</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 变更默认工作区 -->
+  <div v-if="showDefaultWsModal" class="modal modal-open" @click.self="showDefaultWsModal=false">
+    <div class="mc">
+      <h3>📁 变更 openclaw 默认工作区</h3>
+      <label class="mlabel">默认工作区路径</label>
+      <input v-model="defaultWsInput" placeholder="留空 = 恢复 openclaw 内置默认（如 D:\openclaw\workspace）" style="font-family:monospace;font-size:11px">
+      <div style="font-size:10px;color:#86868b;margin-top:4px;line-height:1.5">
+        ⚠️ 只改配置，<b>不迁移任何目录</b>。受影响的是<b>未显式设置工作区</b>的 agent（解析路径立即跟随新值，
+        目录需自行处理）。已有显式工作区的 agent 不受影响。<br>
+        当前默认：<span class="t" style="font-family:monospace">{{ status.defaultWorkspace || '-' }}</span>
+      </div>
+      <div v-if="defaultWsError" class="mt" style="background:#ffe0e0;border-radius:6px;padding:6px 8px;font-size:11px;color:#a00">{{ defaultWsError }}</div>
+      <div class="ma">
+        <button class="btn sec" @click="showDefaultWsModal=false">取消</button>
+        <button class="btn pri" @click="saveDefaultWs" :disabled="defaultWsSaving">{{ defaultWsSaving ? '保存中...' : '保存' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: openclaw 安装向导 -->
+  <div v-if="showInstallModal" class="modal modal-open" @click.self="showInstallModal=false">
+    <div class="mc" style="max-width:480px">
+      <h3>🛠 安装 openclaw</h3>
+      <!-- 1) 前置环境 -->
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">1️⃣ 前置环境检查</div>
+      <div v-if="installStatus" style="font-size:11px;line-height:1.9;background:#26262b;color:#e8e8ea;border-radius:8px;padding:8px 10px;margin-bottom:8px;font-family:monospace">
+        <div>Node.js：<b :style="installStatus.nodeOk ? 'color:#51cf66' : 'color:#ff6b6b'">{{ installStatus.node }}</b>
+          <span class="t" style="color:#8a8a90">（要求 {{ installStatus.nodeMin }}）</span>
+          <span v-if="!installStatus.nodeOk" style="color:#ffd43b"> — 不满足</span>
+        </div>
+        <div>npm：<b :style="installStatus.npm ? 'color:#51cf66' : 'color:#ff6b6b'">{{ installStatus.npm || '未检测到' }}</b></div>
+        <div>openclaw：<b :style="installStatus.openclawInstalled ? 'color:#51cf66' : 'color:#ff6b6b'">{{ installStatus.openclawInstalled ? installStatus.openclawVersion : '未安装' }}</b>
+          <span class="t" style="color:#8a8a90" v-if="installStatus.openclawPath">（{{ short(installStatus.openclawPath) }}）</span>
+        </div>
+        <div v-if="!installStatus.nodeOk && installStatus.winget" style="color:#ffd43b">检测到 winget，可一键安装 Node.js LTS ⬇️</div>
+      </div>
+      <div class="f" style="gap:6px;margin-bottom:10px">
+        <button class="btn xs sec" @click="loadInstallStatus" :disabled="installBusy">{{ installBusy ? '检测中...' : '🔄 重新检测' }}</button>
+        <button v-if="installStatus && !installStatus.nodeOk && installStatus.winget" class="btn xs" style="background:#3a2e1e;color:#ffd43b" @click="installNodeLts" :disabled="installBusy">{{ installBusy ? '安装中...' : '⬇️ 一键安装 Node.js LTS' }}</button>
+      </div>
+      <!-- 2) 安装 openclaw -->
+      <div style="font-size:12px;font-weight:600;margin-bottom:6px">2️⃣ 安装 openclaw（npm install -g openclaw）</div>
+      <label class="mlabel">安装位置（npm 全局 prefix，留空 = 当前：<span class="t" style="font-family:monospace">{{ installStatus?.prefix || '-' }}</span>）</label>
+      <input v-model="installForm.prefix" placeholder="例：D:\openclaw\global（程序本体位置，留空用默认全局位置）" style="font-family:monospace;font-size:11px">
+      <label class="mlabel">openclaw 根目录（数据目录，留空 = 不创建）</label>
+      <input v-model="installForm.root" :placeholder="'例：D:\\openclaw（自动生成 .openclaw / workspace，并设置 OPENCLAW_HOME）'" style="font-family:monospace;font-size:11px">
+      <div style="font-size:10px;color:#86868b;margin-top:2px;line-height:1.5">
+        📁 根目录下将自动创建：<span class="t">.openclaw</span>（状态/配置根）、<span class="t">workspace</span>（工作区；技能目录 <span class="t">.agents/skills</span> 由 openclaw 从工作区向上自动发现）。
+        若 <span class="t">.openclaw/openclaw.json</span> 已存在则<b>复用不覆盖</b>，仅补齐默认工作区。<br>
+        ⚠️ 指定根目录会执行 <span class="t">setx OPENCLAW_HOME</span>（用户级环境变量，仅新进程生效），
+        装完后需<b>重启面板进程与 gateway</b> 才会指向新根目录；指定安装位置还会 <span class="t">npm config set prefix</span>。</div>
+      <div v-if="installBusy" style="font-size:11px;color:#ffd43b;margin-top:6px">⏳ 正在执行（最长 5 分钟）…</div>
+      <div v-if="installResult" :style="'margin-top:8px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:160px;overflow:auto;border-radius:6px;padding:6px 8px;' + (installResult.ok ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a1e1e;color:#ff6b6b')">{{ installResult.text }}</div>
+      <div class="ma">
+        <button class="btn sec" @click="showInstallModal=false">关闭</button>
+        <button class="btn pri" @click="doInstallOpenclaw" :disabled="installBusy || (installStatus && !installStatus.nodeOk)">{{ installBusy ? '安装中...' : '⬇️ 安装 openclaw' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: openclaw 本体更新 -->
+  <div v-if="showOcUpdateModal" class="modal modal-open" @click.self="showOcUpdateModal=false">
+    <div class="mc">
+      <h3>⬆️ 更新 openclaw 本体</h3>
+      <div style="font-size:12px;line-height:1.7;background:#2a2a30;border-radius:8px;padding:8px 10px;margin-bottom:10px">
+        当前：<b>{{ ocInfo.current || '-' }}</b>（{{ short(ocInfo.packagePath) }}）
+        <template v-if="ocInfo.latest">
+          <br>最新：<b>{{ ocInfo.latest }}</b>
+          <span v-if="ocInfo.hasUpdate" style="color:#ffd43b"> — 有新版本可更新</span>
+          <span v-else style="color:#34c759"> — 已是最新</span>
+        </template>
+        <div v-if="ocInfo.error" style="color:#ff6b6b;font-size:11px">查询出错：{{ ocInfo.error }}</div>
+        <div style="font-size:10px;color:#86868b;margin-top:4px">更新方式：npm install -g openclaw@版本（官方无独立更新命令）。更新后需<b>重启 openclaw gateway</b> 生效，本面板不受影响。</div>
+      </div>
+      <label class="mlabel">选择版本（留空 = 最新版）</label>
+      <select v-model="ocUpdateVersion" style="font-family:monospace;font-size:11px">
+        <option value="">（最新版 {{ ocInfo.latest || '' }}）</option>
+        <optgroup v-if="ocInfo.versions && ocInfo.versions.length" label="历史版本（最近 30 个）">
+          <option v-for="v in ocRecentVersions" :key="v" :value="v">{{ v }}<template v-if="v===ocInfo.current">（当前）</template><template v-if="v===ocInfo.latest">（最新）</template></option>
+        </optgroup>
+      </select>
+      <div v-if="ocUpdateBusy" style="font-size:11px;color:#ffd43b;margin-top:6px">⏳ 正在执行 npm install（最长 4 分钟）…</div>
+      <div v-if="ocUpdateResult" :style="'margin-top:8px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:160px;overflow:auto;border-radius:6px;padding:6px 8px;' + (ocUpdateResult.ok ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a1e1e;color:#ff6b6b')">{{ ocUpdateResult.text }}</div>
+      <div class="ma">
+        <button class="btn sec" @click="showOcUpdateModal=false">关闭</button>
+        <button class="btn pri" @click="doOcUpdate" :disabled="ocUpdateBusy">{{ ocUpdateBusy ? '更新中...' : '⬆️ 更新' }}</button>
       </div>
     </div>
   </div>
@@ -579,17 +712,18 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       <h3>🤖 新建 Agent</h3>
       <label class="mlabel">Agent ID *</label>
       <input v-model="newAgent.id" placeholder="mybot (英文字母开头)" ref="newAgentIdInput" autocomplete="off">
+      <label class="mlabel">工作区</label>
+      <input v-model="newAgent.workspace" placeholder="留空 = openclaw 默认工作区/<id>（如 D:\openclaw\workspace\mybot）" style="font-family:monospace;font-size:11px">
       <label class="mlabel">模板</label>
       <select v-model="newAgent.tpl">
-        <option value="comfyui">comfyui (画图)</option>
-        <option value="toutiao">toutiao (头条)</option>
-        <option value="novel">novel (小说)</option>
-        <option value="manju">manju (漫剧)</option>
+        <option value="">（不选 — 空白创建，需在聊天中自行确认）</option>
+        <optgroup label="现存 Agent 模板">
+          <option v-for="t in agentTemplates.existing" :key="'e-'+t" :value="t">{{ t }}</option>
+        </optgroup>
+        <optgroup label="推荐模板">
+          <option v-for="t in agentTemplates.recommended" :key="'r-'+t.name" :value="t.name">{{ t.label }}（{{ t.name }}）</option>
+        </optgroup>
       </select>
-      <label class="mlabel">飞书 App ID (可选)</label>
-      <input v-model="newAgent.appId" placeholder="cli_xxx">
-      <label class="mlabel">飞书 App Secret (可选)</label>
-      <input v-model="newAgent.appSecret" type="password" placeholder="完整 Secret">
       <div class="ma">
         <button class="btn sec" @click="showCreate=false">取消</button>
         <button class="btn pri" @click="createAgent">创建</button>
@@ -598,7 +732,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: 编辑提供商 -->
-  <div v-if="showProviderEdit" class="modal" @click.self="showProviderEdit=false">
+  <div v-if="showProviderEdit" class="modal modal-open" @click.self="showProviderEdit=false">
     <div class="mc">
       <h3>✏️ 编辑提供商 <span style="font-size:12px;color:#6e6e73">{{ providerEdit.id }}</span></h3>
       <label class="mlabel">Base URL</label>
@@ -616,8 +750,74 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
+  <!-- Modal: 编辑 Agent -->
+  <div v-if="showAgentEditModal" class="modal modal-open" @click.self="closeAgentEditModal">
+    <div class="mc">
+      <h3>✏️ 编辑 Agent：{{ agentEditForm.id }}</h3>
+      <label class="mlabel">显示名</label>
+      <input v-model="agentEditForm.name" placeholder="留空则显示 id">
+      <label class="mlabel">工作区</label>
+      <div class="f" style="gap:4px">
+        <input v-model="agentEditForm.workspace" placeholder="留空 = 恢复默认工作区" style="flex:1;font-family:monospace;font-size:11px">
+        <button class="btn xs sec" @click="agentEditForm.workspace=''" title="恢复默认工作区（defaults.workspace/<id> 或 openclaw 默认）">↩ 默认</button>
+      </div>
+      <div style="font-size:10px;color:#86868b;margin-top:2px">⚠️ 填绝对路径 = 变更工作区并<b>自动迁移目录</b>；清空并保存 = 恢复默认工作区（目录迁移回默认位置）。</div>
+      <label class="mlabel">默认模型</label>
+      <select v-model="agentEditForm.model">
+        <optgroup v-for="g in groups" :key="g.n" :label="g.n">
+          <option v-for="m in g.ms" :key="m.k" :value="m.k">{{ m.s }}</option>
+        </optgroup>
+        <option v-if="agentEditForm.model && !groups.some(g=>g.ms.some(m=>m.k===agentEditForm.model))" :value="agentEditForm.model" style="color:#86868b">{{ short(agentEditForm.model) }}（当前）</option>
+      </select>
+      <div class="f mt">
+        <label style="display:flex;align-items:center;gap:6px">
+          <input type="checkbox" v-model="agentEditForm.isDefault"> 设为默认 Agent
+        </label>
+      </div>
+      <div style="font-size:10px;color:#86868b;margin-top:4px">⚠️ 默认 Agent 决定工作区根目录与未指定 agent 时的路由，修改需谨慎（应只有一个默认）。原默认 agent 若未显式设置工作区，其工作区路径会被自动固定，防止解析跳变。</div>
+      <div style="margin-top:12px;padding-top:8px;border-top:1px solid var(--soft2)">
+        <label class="mlabel">重命名 ID（迁移目录/会话/路由/飞书/场景）</label>
+        <div class="f" style="gap:4px">
+          <input v-model="agentEditNewId" placeholder="新 id（英文字母开头）" style="flex:1;font-family:monospace;font-size:11px" @keyup.enter="renameAgent">
+          <button class="btn danger-btn" @click="renameAgent" :disabled="!agentEditNewId.trim() || agentRenaming">{{ agentRenaming ? '迁移中...' : '🔁 重命名' }}</button>
+        </div>
+        <div style="font-size:10px;color:#86868b;margin-top:4px">⚠️ 将迁移工作区目录（含留空创建的默认布局）、agent 目录（含会话）、路由绑定、飞书账号、场景配置；默认 agent（main）不可重命名；历史会话可能无法延续，建议操作后重启 openclaw gateway。</div>
+      </div>
+      <div class="ma">
+        <button class="btn sec" @click="closeAgentEditModal">取消</button>
+        <button class="btn pri" @click="applyAgentEdit" :disabled="agentEditSaving">{{ agentEditSaving ? '保存中...' : '保存' }}</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Modal: 切换模板（慎用） -->
+  <div v-if="showTemplateModal" class="modal modal-open" @click.self="closeTemplateModal">
+    <div class="mc">
+      <h3>🧩 切换模板：{{ templateTarget ? templateTarget.id : '' }}</h3>
+      <div style="font-size:12px;line-height:1.6;background:#3a2e1e;color:#ffd43b;border-radius:8px;padding:8px 10px;margin-bottom:10px">
+        ⚠️ <strong>慎用</strong>：应用后将用模板<b>覆盖</b>该 Agent 工作区的
+        AGENTS.md / SOUL.md / TOOLS.md / IDENTITY.md / USER.md / HEARTBEAT.md / BOOTSTRAP.md，
+        并<b>重置 MEMORY.md（记忆清空）</b>。其他业务文件不受影响。
+      </div>
+      <label class="mlabel">选择模板</label>
+      <select v-model="templateSel">
+        <option value="">（清空模板文件 — 恢复空白）</option>
+        <optgroup label="现存 Agent 模板">
+          <option v-for="t in agentTemplates.existing" :key="'te-'+t" :value="t">{{ t }}</option>
+        </optgroup>
+        <optgroup label="推荐模板">
+          <option v-for="t in agentTemplates.recommended" :key="'tr-'+t.name" :value="t.name">{{ t.label }}（{{ t.name }}）</option>
+        </optgroup>
+      </select>
+      <div class="ma">
+        <button class="btn sec" @click="closeTemplateModal">取消</button>
+        <button class="btn danger-btn" @click="applyTemplate" :disabled="templateApplying">{{ templateApplying ? '应用中...' : '应用（慎用）' }}</button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: 保存场景 -->
-  <div v-if="showSaveScene" class="modal" @click.self="showSaveScene=false">
+  <div v-if="showSaveScene" class="modal modal-open" @click.self="showSaveScene=false">
     <div class="mc">
       <h3>🎬 保存场景</h3>
       <label class="mlabel">场景名</label>
@@ -638,18 +838,36 @@ createApp({
   setup() {
     // State
     const agents = ref([]); const models = ref([]); const providers = ref([]);
-    const catalog = ref([]); const backups = ref([]); const logs = ref([]); const scenes = ref([]); const paths = ref({});
+    const catalog = ref([]); const availProviders = ref([]); const backups = ref([]); const logs = ref([]); const scenes = ref([]); const paths = ref({});
     const status = ref({}); const loading = ref(true);
-    const msg = ref(''); const msgOk = ref(true); const toast = ref({show:false,msg:'',type:'ok'});
-    const kf = ref({provider:'',apiKey:'',baseUrl:''}); const kr = ref(null); const kl = ref(false);
+    const toast = ref({show:false,msg:'',type:'ok'});
+    const kf = ref({provider:'',apiKey:'',baseUrl:'',customId:'',customBaseUrl:''}); const kr = ref(null); const kl = ref(false);
+    const probeDisabled = computed(()=>{
+      if(kl.value) return true;
+      if(kf.value.provider==='__custom__') return !kf.value.customId.trim() || !kf.value.apiKey;
+      return !kf.value.provider || !kf.value.apiKey;
+    });
     const showCreate = ref(false); const showSaveScene = ref(false);
+    const showAllBackups = ref(false);
+    const backupTotal = ref(0);   // 备份总份数（后端返回，用于显示"显示全部"按钮）
+    const logLines = ref(80);   // 日志当前加载行数（默认 80）
+    function toggleAllBackups(){
+      showAllBackups.value = !showAllBackups.value;
+      // 展开时拉全量，收起后回 10 条
+      loadBackups(showAllBackups.value);
+    }
+    async function loadMoreLogs(){
+      logLines.value = Math.min(logLines.value + 200, 5000);
+      try{ const d = await api('/api/log?lines=' + logLines.value); logs.value = d.lines; }catch(e){}
+    }
     const confirmDialog = ref({show:false, title:'', body:'', danger:false, confirmText:'确定', cancelText:'取消', _resolve:null});
-    const newAgent = ref({id:'',tpl:'comfyui',appId:'',appSecret:''}); const sceneName = ref('');
+    const newAgent = ref({id:'',tpl:''}); const sceneName = ref('');
+    const agentTemplates = ref({existing:[],recommended:[]});
     const showProviderEdit = ref(false);
     const providerEdit = ref({id:'', baseUrl:'', apiKey:'', api:'', authHeader:true});
     const providerEditError = ref(''); const providerEditSaving = ref(false);
     const refreshingAll = ref(false);
-    const fileAgent = ref(''); const fileList = ref([]); const filteredFiles = ref([]);
+    const fileAgent = ref(''); const fileList = ref({dirs:[],files:[]}); const filteredFiles = ref([]);
     const selectedFile = ref(''); const fileContent = ref(null); const fileEditing = ref(false);
     const fileFilter = ref(''); const batchModel = ref('');
     // Feishu
@@ -665,6 +883,7 @@ createApp({
     const guidedBot = ref({botKey:'',appId:'',appSecret:'',agentId:''});
     // openclaw 内置扫码注册
     const reg = ref({status:'idle',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null});
+    const regDomain = ref('feishu');  // Feishu (.cn) or Lark (.larksuite.com)
     // Use the QR URL the backend returns (Feishu's verification_uri_complete,
     // which embeds the user_code in the path). The frontend was previously
     // constructing its own ?session=<device_code> URL which is meaningless —
@@ -683,26 +902,29 @@ createApp({
 
     const uptimeStr = computed(()=>{
       const s=Math.floor(status.value.uptime||0);
-      if(s<60)return s+'s';if(s<3600)return Math.floor(s/60)+'m';return Math.floor(s/3600)+'h'+Math.floor((s%3600)/60)+'m';
+      const d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60);
+      if(d>0) return d+'天'+h+'时';
+      if(h>0) return h+'时'+m+'分';
+      if(m>0) return m+'分钟';
+      return s+'秒';
     });
 
     const changedCount = computed(()=>agents.value.filter(a=>a._ch).length);
 
     const modelFilter = ref('');  // search box for the model pickers (#5)
+    // 模型下拉只显示「已配置 KEY 的供应商」及其配置中注册的模型
+    // （= probe/全部刷新后保存的实时可用模型，与供应商表一致）。
+    // 不再使用 CLI 全局模型列表——那会混入未配 KEY 的供应商与过时项。
     const groups = computed(()=>{
       const map={};
-      // 从 catalog 获取供应商名
-      catalog.value.forEach(c=>{if(!map[c.id])map[c.id]={n:c.name||c.id,ms:[]}});
-      models.value.forEach(m=>{
-        const p=m.key.split('/')[0]; const s=m.key.split('/').slice(1).join('/');
-        if(!map[p])map[p]={n:p,ms:[]};
-        if(!map[p].ms.some(x=>x.k===m.key))map[p].ms.push({k:m.key,s,av:m.available||m.hasKey});
+      providers.value.forEach(p=>{
+        if(!p.key) return;                       // 只保留已配置 KEY 的供应商
+        const g=map[p.id]||(map[p.id]={n:p.id,ms:[]});
+        (p.models||[]).forEach(k=>{
+          if(!g.ms.some(x=>x.k===k)) g.ms.push({k, s:k.split('/').slice(1).join('/')});
+        });
       });
-      // 有 key 的排前面
-      const keyed=catalog.value.filter(c=>c.hasKey).map(c=>c.id);
-      const r=keyed.map(k=>map[k]).filter(Boolean);
-      Object.keys(map).filter(k=>!keyed.includes(k)).forEach(k=>{if(map[k].ms.length)r.push(map[k])});
-      return r;
+      return Object.keys(map).sort((a,b)=>a.localeCompare(b)).map(k=>map[k]).filter(g=>g.ms.length);
     });
     const filteredGroups = computed(() => {
       const q = modelFilter.value.trim().toLowerCase();
@@ -713,10 +935,12 @@ createApp({
         .filter(g => g.ms.length > 0);
     });
 
-    // Toast
+    // Toast — a newer toast must not be hidden by an older timer
+    let toastTimer = null;
     function showToast(msg,type='ok',duration=3000){
       toast.value={show:true,msg,type};
-      setTimeout(()=>toast.value.show=false,duration);
+      clearTimeout(toastTimer);
+      toastTimer=setTimeout(()=>toast.value.show=false,duration);
     }
 
     // Promise-based confirm. Returns true/false; renders a styled modal.
@@ -748,23 +972,41 @@ createApp({
     const authModalData = ref({resolve:null, reject:null, value:''});
     const authRequired = ref(false);  // becomes true if server demands auth
     function setAuthToken(t) {
-      authToken.value = t || '';
-      if (t) localStorage.setItem('switcher_token', t);
+      authToken.value = String(t || '').trim();  // never store stray whitespace/newlines
+      if (authToken.value) localStorage.setItem('switcher_token', authToken.value);
       else localStorage.removeItem('switcher_token');
     }
-    async function askToken() {
-      return new Promise((resolve, reject) => {
+    // Shared auth wait: concurrent 401s (e.g. the 11 parallel refresh()
+    // requests) must show ONE modal and all resume on a single confirm.
+    // Without this, each 401 opened its own askToken() and only the last
+    // resolve fired — the other 10 requests hung forever ("输入后仍不行").
+    let authWait = null;
+    function askToken() {
+      if (authWait) return authWait;
+      authWait = new Promise((resolve, reject) => {
         authModalData.value = {resolve, reject, value: ''};
         showAuthModal.value = true;
-      });
+      }).finally(() => { authWait = null; });
+      return authWait;
     }
     function confirmAuthToken() {
       const d = authModalData.value;
-      if (!d.value) return;
+      const v = String(d.value || '').trim();  // trim: .bat pastes often carry trailing whitespace
+      if (!v) return;
       const r = d.resolve;  // capture before nulling
       showAuthModal.value = false;
       d.resolve = null; d.reject = null;  // prevent double-call
-      r(d.value);
+      r(v);
+    }
+    // Clear a stale localStorage token and retry without it (fixes the
+    // "stuck modal across refreshes" case: a dirty token kept triggering 401).
+    function clearAuthToken() {
+      const d = authModalData.value;
+      const r = d.resolve;
+      showAuthModal.value = false;
+      d.resolve = null; d.reject = null;
+      setAuthToken('');
+      r('__cleared__');
     }
     function cancelAuthToken() {
       const d = authModalData.value;
@@ -774,10 +1016,19 @@ createApp({
       d.resolve = null; d.reject = null;
       rej();
     }
-    async function api(path, opts = {}) {
+    async function api(path, opts = {}, _retried = false) {
       const headers = Object.assign({}, opts.headers || {});
       if (authToken.value) headers['Authorization'] = 'Bearer ' + authToken.value;
-      const r = await fetch(path, Object.assign({}, opts, {headers}));
+      const {timeout, ...rest} = opts;
+      let ac = null;
+      if (timeout) { ac = new AbortController(); setTimeout(()=>ac.abort(), timeout); }
+      let r;
+      try {
+        r = await fetch(path, Object.assign({}, rest, {headers, ...(ac?{signal:ac.signal}:{})}));
+      } catch(e) {
+        if (ac && e && e.name === 'AbortError') throw new Error('请求超时（' + Math.round(timeout/1000) + 's）');
+        throw e;
+      }
       if (r.status === 401) {
         // Auth required. Probe if it's because the server needs auth at all
         // or just our token is bad. Ask user for a new one.
@@ -786,12 +1037,15 @@ createApp({
           if (status.required) {
             authRequired.value = true;
             const t = await askToken();
+            if (t === '__cleared__') { setAuthToken(''); return api(path, opts, true); }  // retry token-less once
             if (!t) throw new Error('Auth required');
             setAuthToken(t);
-            // Retry once with the new token
-            return api(path, opts);
+            if (_retried) throw new Error('Auth failed: token rejected');  // cap: never loop forever
+            return api(path, opts, true);
           }
-        } catch (e) { /* fall through to error */ }
+        } catch (e) {
+          if (e && e.message && (e.message.startsWith('Auth '))) throw e;
+        }
         throw new Error(`HTTP 401`);
       }
       if (!r.ok) {
@@ -807,7 +1061,12 @@ createApp({
     async function loadModels(){models.value=await api('/api/models')}
     async function loadProviders(){providers.value=await api('/api/providers')}
     async function loadCatalog(){catalog.value=await api('/api/providers/catalog')}
-    async function loadBackups(){backups.value=await api('/api/backups')}
+    async function loadAvailProviders(){try{availProviders.value=await api('/api/providers/available')}catch(e){}}
+    async function loadBackups(all){
+      const d=await api('/api/backups'+(all?'?all=1':''));
+      backups.value = d.list || [];
+      backupTotal.value = d.total || backups.value.length;
+    }
     async function loadLogs(){const d=await api('/api/log');logs.value=d.lines}
     async function loadScenes(){scenes.value=await api('/api/scenes')}
     async function loadStatus(){status.value=await api('/api/status')}
@@ -823,9 +1082,12 @@ createApp({
     async function refresh(){
       loading.value=true;
       try{
-        await Promise.all([loadAgents(),loadModels(),loadProviders(),loadCatalog(),loadBackups(),loadLogs(),loadScenes(),loadStatus(),loadPaths(),loadFeishu(),loadFeishuDiag()]);
+        await Promise.all([loadAgents(),loadModels(),loadProviders(),loadCatalog(),loadAvailProviders(),loadBackups(),loadLogs(),loadScenes(),loadStatus(),loadPaths(),loadFeishu(),loadFeishuDiag(),loadTemplates()]);
       }catch(e){showToast('加载失败: '+e.message,'err')}
       loading.value=false;
+    }
+    async function loadTemplates(){
+      try{ agentTemplates.value = await api('/api/agent/templates'); }catch(e){}
     }
 
     async function apply(){
@@ -857,18 +1119,227 @@ createApp({
     async function probe(){
       kl.value=true;kr.value=null;
       try{
-        const d=await api('/api/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider:kf.value.provider,apiKey:kf.value.apiKey,baseUrl:kf.value.baseUrl||''})});
+        const isCustom = kf.value.provider==='__custom__';
+        const provider = isCustom ? kf.value.customId.trim() : kf.value.provider;
+        const baseUrl  = isCustom ? kf.value.customBaseUrl.trim() : (kf.value.baseUrl||'');
+        if(!provider){ kr.value={ok:false,error:'请填写供应商 ID'}; kl.value=false; return; }
+        const d=await api('/api/probe',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({provider,apiKey:kf.value.apiKey,baseUrl})});
         kr.value={ok:d.ok,count:d.count,error:d.error};
         if(d.ok)showToast(`✅ ${d.count} 个模型已写入`);
-        await Promise.all([loadAgents(),loadProviders(),loadCatalog(),loadModels()]);
+        await Promise.all([loadAgents(),loadProviders(),loadCatalog(),loadAvailProviders(),loadModels()]);
+        if(d.ok && isCustom){ kf.value.provider=''; kf.value.customId=''; kf.value.customBaseUrl=''; kf.value.apiKey=''; }
       }catch(e){kr.value={ok:false,error:e.message}}
       kl.value=false;
     }
 
     // Open the create-agent modal: reset the form and show.
     function openCreate() {
-      newAgent.value = {id:'',tpl:'comfyui',appId:'',appSecret:''};
+      newAgent.value = {id:'',tpl:'',workspace:''};
       showCreate.value = true;
+    }
+
+    // ---- 变更 openclaw 默认工作区 ----
+    const showDefaultWsModal = ref(false);
+    const defaultWsInput = ref('');
+    const defaultWsSaving = ref(false);
+    const defaultWsError = ref('');
+    function openDefaultWsModal(){
+      defaultWsInput.value = status.value.defaultWorkspace || '';
+      defaultWsError.value = '';
+      showDefaultWsModal.value = true;
+    }
+    async function saveDefaultWs(){
+      defaultWsSaving.value = true; defaultWsError.value = '';
+      try{
+        const d = await api('/api/agents/defaults/workspace',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({workspace:defaultWsInput.value})});
+        if(d.ok){
+          showDefaultWsModal.value = false;
+          await loadStatus(); await loadAgents();
+          const note = d.affected && d.affected.length ? `；受影响的 agent（无显式工作区，解析将跟随）: ${d.affected.join(', ')}` : '';
+          showToast('✅ 默认工作区已设为 ' + (d.workspace||'(openclaw 内置默认)') + note);
+        } else defaultWsError.value = d.error || '保存失败';
+      }catch(e){ defaultWsError.value = e.message; }
+      defaultWsSaving.value = false;
+    }
+
+    // ---- openclaw 安装向导 ----
+    const showInstallModal = ref(false);
+    const installStatus = ref(null);
+    const installForm = ref({prefix:'',root:''});
+    const installBusy = ref(false);
+    const installResult = ref(null);
+    async function loadInstallStatus(){
+      installBusy.value = true;
+      try{ installStatus.value = await api('/api/openclaw/install/status'); }
+      catch(e){ installResult.value = {ok:false, text:'❌ 环境检测失败: '+e.message}; }
+      installBusy.value = false;
+    }
+    function openInstallModal(){
+      showInstallModal.value = true;
+      installResult.value = null;
+      installForm.value = {prefix:'',root:''};
+      loadInstallStatus();
+    }
+    async function installNodeLts(){
+      if(!await askConfirm({title:'安装 Node.js LTS', danger:true, confirmText:'安装',
+        body:'将通过 winget 安装 Node.js LTS（约 2-5 分钟）。\n\n安装完成后需重启本面板进程（openclaw-switcher）刷新 PATH 才能使用新 Node。'})) return;
+      installBusy.value = true; installResult.value = null;
+      try{
+        const d = await api('/api/openclaw/install/node',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}',timeout:650000});
+        installResult.value = {ok:!!d.ok, text:(d.ok?'✅ Node.js 安装完成（重启面板进程后生效）\n':'❌ 安装失败\n') + ((d.output||'').slice(-1200)||(d.error||'无输出'))};
+        if(d.ok) await loadInstallStatus();
+      }catch(e){ installResult.value = {ok:false, text:'❌ 请求失败: '+e.message}; }
+      installBusy.value = false;
+    }
+    async function doInstallOpenclaw(){
+      const rootPart = installForm.value.root.trim();
+      if(!await askConfirm({title:'安装 openclaw', danger:true, confirmText:'安装',
+        body:'将执行：npm install -g openclaw'+(installForm.value.prefix.trim()?`（prefix: ${installForm.value.prefix.trim()}）`:'（默认全局位置）')+(rootPart?`\n数据根目录：${rootPart}\n将创建 .openclaw（状态根）+ workspace，并 setx OPENCLAW_HOME=${rootPart}\\.openclaw`:'')+'\n\n安装完成后需重启面板进程与 gateway 生效。'})) return;
+      installBusy.value = true; installResult.value = null;
+      try{
+        const d = await api('/api/openclaw/install',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({prefix:installForm.value.prefix,root:installForm.value.root}),timeout:320000});
+        let extra='';
+        if(d.root && d.root.error) extra = '\n'+d.root.error;
+        if(d.root && d.root.root) extra = `\n📁 根目录: ${d.root.root}\n   状态根: ${d.root.home}\n   工作区: ${d.root.workspace}\n   ${d.root.env||''}`;
+        installResult.value = {ok:!!d.ok, text:(d.ok?'✅ openclaw 安装成功\n':'❌ 安装失败\n') + ((d.output||'').slice(-1500)||(d.error||'无输出')) + extra};
+        if(d.ok){
+          await loadInstallStatus();
+          await loadOcInfo(true);
+          showToast('✅ openclaw 已安装，请重启面板进程与 gateway 后使用');
+        } else {
+          showToast('安装失败: '+(d.error||'见输出'),'err');
+        }
+      }catch(e){ installResult.value = {ok:false, text:'❌ 请求失败: '+e.message}; }
+      installBusy.value = false;
+    }
+
+    const ocInfo = ref({current:'-',latest:'',hasUpdate:false,versions:[],packagePath:'',error:''});
+    const ocRecentVersions = computed(()=>{
+      const v = ocInfo.value.versions || [];
+      // 取最近 30 个（含 beta），降序显示
+      return v.slice(-30).reverse();
+    });
+    const showOcUpdateModal = ref(false);
+    const ocUpdateVersion = ref('');
+    const ocUpdateBusy = ref(false);
+    const ocUpdateResult = ref(null);
+    async function loadOcInfo(force){
+      try{
+        const d = await api('/api/openclaw/update/info'+(force?'?force=1':''));
+        if(d && d.ok) ocInfo.value = {current:d.current||'-',latest:d.latest||'',hasUpdate:!!d.hasUpdate,versions:d.versions||[],packagePath:d.packagePath||'',error:d.error||''};
+      }catch(e){ /* 静默：网络失败不打扰 */ }
+    }
+    function openOcUpdateModal(){
+      ocUpdateVersion.value = '';
+      ocUpdateResult.value = null;
+      showOcUpdateModal.value = true;
+      loadOcInfo(true);
+    }
+    async function doOcUpdate(){
+      if(ocUpdateBusy.value) return;
+      const target = ocUpdateVersion.value.trim();
+      const confirmBody = target
+        ? `将 openclaw 从 ${ocInfo.value.current} 更新到 ${target}？\n\n执行：npm install -g openclaw@${target}\n（历史版本可能不稳定，建议先备份配置）`
+        : `将 openclaw 更新到最新版（${ocInfo.value.latest}）？\n\n执行：npm install -g openclaw\n（当前: ${ocInfo.value.current}）`;
+      if(!await askConfirm({title:'更新 openclaw', danger:true, confirmText:'更新', body:confirmBody})) return;
+      ocUpdateBusy.value = true; ocUpdateResult.value = null;
+      try{
+        const d = await api('/api/openclaw/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:target}),timeout:250000});
+        ocUpdateResult.value = {ok:!!d.ok, text:(d.ok?'✅ 更新成功\n':'❌ 更新失败\n') + ((d.output||'').slice(-1500) || (d.error||'无输出'))};
+        if(d.ok){
+          await loadOcInfo(true);
+          showToast('✅ openclaw 已更新至 ' + (target||d.latest||'最新版') + '，请重启 openclaw gateway 生效');
+        } else {
+          showToast('更新失败: '+(d.error||'见输出'),'err');
+        }
+      }catch(e){ ocUpdateResult.value = {ok:false, text:'❌ 请求失败: '+e.message}; }
+      ocUpdateBusy.value = false;
+    }
+
+    // ---- 编辑 Agent（名称/默认模型/默认标记） ----
+    const showAgentEditModal = ref(false);
+    const agentEditForm = ref({id:'',name:'',model:'',isDefault:false});
+    const agentEditSaving = ref(false);
+    const agentEditNewId = ref('');
+    const agentRenaming = ref(false);
+    async function renameAgent(){
+      const f = agentEditForm.value;
+      const newId = agentEditNewId.value.trim();
+      if(!newId){ showToast('请输入新 id','err'); return; }
+      if(!/^[a-zA-Z][a-zA-Z0-9_-]{1,30}$/.test(newId)){ showToast('新 id 格式错: 英文字母开头, 2-30 字符','err'); return; }
+      if(f.id==='main'){ showToast('默认 agent（main）不可重命名','err'); return; }
+      if(!await askConfirm({title:'重命名 Agent', danger:true, confirmText:'重命名',
+        body:`将「${f.id}」重命名为「${newId}」？\n\n将迁移：工作区目录、agent 目录（含会话）、路由绑定、飞书账号、场景配置。\n\n⚠️ 历史会话可能无法延续，建议操作后重启 openclaw gateway。`})) return;
+      agentRenaming.value=true;
+      try{
+        const d=await api('/api/agent/rename',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:f.id,newId})});
+        if(d.ok){
+          closeAgentEditModal(); agentEditNewId.value='';
+          await refresh();
+          showToast(`✅ 已重命名 ${d.oldId} → ${d.newId}（迁移: ${(d.report||[]).join('、')||'配置'}）`);
+        } else showToast('重命名失败: '+(d.error||'unknown'),'err');
+      }catch(e){ showToast('重命名失败: '+e.message,'err'); }
+      agentRenaming.value=false;
+    }
+    function openAgentEditModal(a){
+      agentEditForm.value = {id:a.id, name:a.name||'', model:a.model||'', isDefault:!!a.isDefault, workspace:a.workspace||''};
+      agentEditNewId.value = '';
+      showAgentEditModal.value = true;
+    }
+    function closeAgentEditModal(){
+      showAgentEditModal.value = false;
+    }
+    async function applyAgentEdit(){
+      const f = agentEditForm.value;
+      agentEditSaving.value = true;
+      try{
+        const body = {id:f.id};
+        if(f.name && f.name !== f.id) body.name = f.name;
+        if(f.model) body.model = f.model;
+        if(f.isDefault) body.default = true;
+        // workspace：只有与当前解析值不同才发送；空串 = 恢复默认
+        if(String(f.workspace||'').trim() !== (agents.value.find(x=>x.id===f.id)?.workspace||'')) body.workspace = String(f.workspace||'').trim();
+        const d = await api('/api/agent/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+        if(d.ok){
+          closeAgentEditModal();
+          await refresh();
+          showToast('✅ 已保存 ' + f.id + ((d.report&&d.report.length)?'（'+d.report.join('；')+'）':''));
+        } else {
+          showToast('保存失败: '+(d.error||'unknown'),'err');
+        }
+      }catch(e){ showToast('保存失败: '+e.message,'err'); }
+      agentEditSaving.value = false;
+    }
+
+    // ---- 切换模板（慎用） ----
+    const showTemplateModal = ref(false);    const templateTarget = ref(null);
+    const templateSel = ref('');
+    const templateApplying = ref(false);
+    function openTemplateModal(a){
+      templateTarget.value = a;
+      templateSel.value = '';
+      showTemplateModal.value = true;
+    }
+    function closeTemplateModal(){
+      showTemplateModal.value = false;
+      templateTarget.value = null;
+      templateSel.value = '';
+    }
+    async function applyTemplate(){
+      const a = templateTarget.value;
+      if(!a) return;
+      templateApplying.value = true;
+      try{
+        const d = await api('/api/agent/template/apply',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.id, template:templateSel.value})});
+        if(d.ok){
+          closeTemplateModal();
+          await refresh();
+          showToast(`✅ ${a.id} 已应用模板：${d.applied}`);
+        } else {
+          showToast('应用失败: '+(d.error||'unknown'),'err');
+        }
+      }catch(e){ showToast('应用失败: '+e.message,'err'); }
+      templateApplying.value = false;
     }
 
     async function createAgent(){
@@ -884,8 +1355,9 @@ createApp({
         return;
       }
       try{
-        const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, tpl:newAgent.value.tpl, appId:newAgent.value.appId, appSecret:newAgent.value.appSecret, workspaceTemplate:newAgent.value.tpl})});
-        if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'comfyui',appId:'',appSecret:''};await refresh();showToast('✅ Agent '+id+' 创建成功')}
+        // workspaceTemplate 留空 = 空白创建（不复制模板文件）；workspace 留空 = openclaw 默认工作区/<id>
+        const d=await api('/api/agent/create',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id, workspaceTemplate:newAgent.value.tpl||'', workspace:String(newAgent.value.workspace||'').trim()})});
+        if(d.ok){showCreate.value=false;newAgent.value={id:'',tpl:'',workspace:''};await refresh();showToast('✅ Agent '+id+' 创建成功'+(newAgent.value.tpl?'':'（空白工作区）'))}
         else{showToast('创建失败: '+(d.error||'unknown'),'err')}
       }catch(e){
         showToast('创建失败: '+e.message,'err');
@@ -895,9 +1367,24 @@ createApp({
     async function deleteAgent(id){
       if(!await askConfirm({title:'删除 Agent', body:`确定删除 Agent "${id}"？\n\n这会删除 workspace 和配置。`, danger:true})) return;
       try{
-        await api('/api/agent/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
+        const d=await api('/api/agent/delete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id})});
         await refresh();showToast('✅ 已删除 '+id);
-      }catch(e){showToast('删除失败: '+e.message,'err')}
+      }catch(e){
+        showToast('删除失败: '+(e.message||'').replace(/^HTTP 400 - /,''),'err');
+        await refresh();
+      }
+    }
+
+    // ---- Tool deny toggles (e.g. cron) ----
+    function toolDenied(a,t){ return !!(a.tools?.deny||[]).includes(t); }
+    function otherDenied(a){ return (a.tools?.deny||[]).filter(t=>t!=='cron'); }
+    async function toggleTool(a,t){
+      const next = !toolDenied(a,t);
+      try{
+        const d = await api('/api/agent/tools/toggle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({id:a.id,tool:t,deny:next})});
+        if(d.ok){ await loadAgents(); showToast(`${a.id}: ${t} 已${next?'禁用':'启用'}`); }
+        else showToast('操作失败: '+(d.error||'unknown'),'err');
+      }catch(e){ showToast('操作失败: '+e.message,'err'); }
     }
 
     // ---- Provider CRUD ----
@@ -968,16 +1455,29 @@ createApp({
       finally { refreshingAll.value = false; }
     }
 
-    // Files
+    // Files（按目录浏览：?path= 子目录，返回 dirs+files）
+    const filePath = ref('');
     async function loadFiles(){
-      if(!fileAgent.value){fileList.value=[];filteredFiles.value=[];return}
-      fileList.value=await api('/api/agent/'+fileAgent.value+'/files');
-      filteredFiles.value=fileList.value;
+      if(!fileAgent.value){fileList.value={path:'',dirs:[],files:[]};filteredFiles.value=[];return}
+      const d=await api('/api/agent/'+fileAgent.value+'/files?path='+encodeURIComponent(filePath.value));
+      fileList.value=d;
+      filteredFiles.value=d.files||[];
       selectedFile.value='';fileContent.value=null;fileFilter.value='';
+    }
+    function enterDir(name){
+      filePath.value=filePath.value?filePath.value+'/'+name:name;
+      loadFiles();
+    }
+    function goUp(){
+      const parts=filePath.value.split('/');
+      parts.pop();
+      filePath.value=parts.join('/');
+      loadFiles();
     }
     function filterFiles(){
       const q=fileFilter.value.toLowerCase();
-      filteredFiles.value=q?fileList.value.filter(f=>f.name.toLowerCase().includes(q)||f.path.toLowerCase().includes(q)):fileList.value;
+      const fsList=fileList.value.files||[];
+      filteredFiles.value=q?fsList.filter(f=>f.name.toLowerCase().includes(q)||f.path.toLowerCase().includes(q)):fsList;
     }
     async function loadFileContent(p){
       selectedFile.value=p;fileEditing.value=false;
@@ -992,6 +1492,16 @@ createApp({
     }
 
     // Backups
+    const backingUp = ref(false);
+    async function manualBackup(){
+      backingUp.value=true;
+      try{
+        const d=await api('/api/backup',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
+        if(d.ok){ await loadBackups(); showToast('✅ 已备份'+(d.backup?'：'+d.backup:'')); }
+        else showToast('备份失败: '+(d.error||'unknown'),'err');
+      }catch(e){ showToast('备份失败: '+e.message,'err'); }
+      backingUp.value=false;
+    }
     async function rollback(b){
       if(!await askConfirm({title:'回滚', body:`回滚到 ${b.name}？\n\n当前 openclaw.json 会被备份替换。`})) return;
       try{
@@ -1002,9 +1512,14 @@ createApp({
 
     // Scenes
     async function saveScene(){
+      const name = (sceneName.value||'').trim();
+      if(!name){ showToast('请输入场景名','err'); return; }
+      // 同名覆盖确认（O10）
+      const existing = scenes.value.find(s=>s.name===name);
+      if(existing && !await askConfirm({title:'覆盖场景', body:`场景「${name}」已存在（保存于 ${existing.timestamp||'?'}），覆盖？`, danger:true, confirmText:'覆盖'})) return;
       const cfg={};agents.value.forEach(a=>{cfg[a.id]=a.model});
       try{
-        await api('/api/scenes/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:sceneName.value,config:cfg})});
+        await api('/api/scenes/save',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,config:cfg})});
         showSaveScene.value=false;sceneName.value='';await loadScenes();showToast('✅ 场景已保存');
       }catch(e){showToast('保存失败: '+e.message,'err')}
     }
@@ -1030,6 +1545,34 @@ createApp({
       const b=feishu.value.bindings?.find(x=>x.match?.accountId===botKey);
       return b?`→ ${b.agentId}`:'';
     }
+    // 编辑弹窗里显示当前 bot 的白名单 ID（与 bot 一一对应）
+    const feishuBotAllowFrom = computed(() => {
+      const key = feishuBotForm.value.botKey;
+      return (key && feishu.value.accounts?.[key]?.allowFrom) || [];
+    });
+    const botAllowFromInput = ref('');
+    // 编辑弹窗内直接增删该 bot 的白名单（立即生效）
+    async function addBotAllowFrom() {
+      const openId = botAllowFromInput.value.trim();
+      const key = feishuBotForm.value.botKey;
+      if (!openId) return;
+      if (!key) { showToast('请先保存 Bot，再添加白名单', 'warn'); return; }
+      try {
+        await api('/api/feishu/allowfrom/add', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({openId, botKey: key})});
+        botAllowFromInput.value = '';
+        await loadFeishu();
+        showToast('✅ 已添加白名单');
+      } catch(e){ showToast('添加失败: '+e.message,'err'); }
+    }
+    async function removeBotAllowFrom(id) {
+      const key = feishuBotForm.value.botKey;
+      if (!key) return;
+      try {
+        await api('/api/feishu/allowfrom/remove', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({openId:id, botKey: key})});
+        await loadFeishu();
+        showToast('✅ 已移除');
+      } catch(e){ showToast('移除失败: '+e.message,'err'); }
+    }
     function openFeishuBotModal(key,info){
       if(key&&info){
         feishuBotForm.value={botKey:key,name:info.name||'',appId:info.appId||'',appSecret:'',agentId:getFeishuBinding(key).replace('→ ',''),enabled:info.enabled!==false,_edit:true};
@@ -1038,6 +1581,22 @@ createApp({
       }
       showFeishuBotModal.value=true;
     }
+    // 为未配置 bot 的 agent 打开新建表单（预设绑定该 agent）
+    function openFeishuBotModalFor(a){
+      feishuBotForm.value={botKey:'',name:'',appId:'',appSecret:'',agentId:a.id,enabled:true,_edit:false};
+      showFeishuBotModal.value=true;
+    }
+    // 飞书卡片按 Agent 遍历：每个 agent 一张卡（含未配置状态）
+    // 注意：binding 可能同时存在「按人路由（peer 型）」与多条 accountId 绑定，
+    // 且历史遗留绑定可能指向已改名的账号——只匹配「accountId 真实存在于 accounts」的那条。
+    const feishuAgents = computed(()=>{
+      return agents.value.map(a=>{
+        const b=(feishu.value.bindings||[]).find(x=>x.match?.channel==='feishu' && x.agentId===a.id && x.match?.accountId && feishu.value.accounts?.[x.match.accountId]);
+        const key=b?.match?.accountId||'';
+        const info=key?(feishu.value.accounts?.[key]||null):null;
+        return {agent:a, botKey:key, bot:info, bound:!!info};
+      });
+    });
     async function saveFeishuBot(){
       const f=feishuBotForm.value;
       try{
@@ -1095,7 +1654,9 @@ createApp({
         reg.value.remainSec=d.expireIn||600;
         reg.value.status='pending';
         regMsg.value='等待扫码...';
-        regBotKey.value=d.sessionId.slice(0,8)+'_bot';
+        // botKey 留空：保存时后端按绑定 Agent 生成 (如 coding_bot)。
+        // 之前默认用 device_code 前 8 位 (v1:eyJhb) — 含冒号，openclaw 不认 → 永远 not configured。
+        regBotKey.value='';
         // 轮询
         if(regPollTimer) clearInterval(regPollTimer);
         regPollTimer=setInterval(pollReg,Math.max(2,d.interval||5)*1000);
@@ -1143,16 +1704,43 @@ createApp({
 
     // 引导创建旧函数已移除（走 openclaw 内置 OAuth）
 
-    // Auto-fill baseUrl when provider changes
-    const watchProvider = setInterval(()=>{
-      if(kf.value.provider&&kf.value._lp!==kf.value.provider){
-        const p=catalog.value.find(x=>x.id===kf.value.provider);
-        if(p)kf.value.baseUrl=p.baseUrl;
-        kf.value._lp=kf.value.provider;
-      }
-    },300);
+    // Auto-fill baseUrl when the selected provider changes
+    watch(() => kf.value.provider, (p) => {
+      if (!p || p === '__custom__') return;
+      const a = availProviders.value.find(x => x.id === p) || catalog.value.find(x => x.id === p);
+      if (a && a.baseUrl) kf.value.baseUrl = a.baseUrl;
+    });
 
-    onMounted(refresh);
+    onMounted(async () => {
+      // Probe auth status on first load. If server requires token and we
+      // don't have one stored, the next API call will trigger the modal.
+      try {
+        const r = await fetch('/api/auth/status');
+        const j = await r.json();
+        authRequired.value = !!j.required;
+      } catch {}
+      await refresh();
+      try { await loadOcInfo(); } catch (e) { /* 静默：查询失败不打扰 */ }
+    });
+
+    // 自动轮询：30s 静默刷新，外部改动（openclaw CLI/其他程序写配置）页面自动跟上。
+    // 跳过 /api/models（CLI 开销大，模型变化靠 probe/refresh 后的手动刷新），
+    // 不触发 loading 态（避免闪烁），后台标签页自动暂停。
+    let pollTimer = null;
+    function startPolling(intervalMs = 30000) {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        if (document.hidden) return;
+        try {
+          await Promise.all([
+            loadAgents(), loadProviders(), loadCatalog(), loadAvailProviders(), loadBackups(showAllBackups.value),
+            loadScenes(), loadStatus(), loadPaths(), loadFeishu(), loadFeishuDiag(),
+            loadOcInfo(),
+          ]);
+        } catch (e) { /* 静默：瞬时失败下轮再试 */ }
+      }, intervalMs);
+    }
+    startPolling();
 
     // Global error handler — anything that throws during click handlers etc.
     // will be surfaced as a toast (in addition to the browser console). Catches
@@ -1173,8 +1761,8 @@ createApp({
     }
 
     return{
-      agents,models,providers,catalog,backups,logs,scenes,status,loading,
-      msg,msgOk,toast,kf,kr,kl,showCreate,showSaveScene,newAgent,sceneName,
+      agents,models,providers,catalog,availProviders,backups,logs,scenes,status,loading,
+      toast,kf,kr,kl,probeDisabled,showCreate,showSaveScene,newAgent,sceneName,
       fileAgent,fileList,filteredFiles,selectedFile,fileContent,fileEditing,fileFilter,
       batchModel,uptimeStr,changedCount,groups,short,ws,sz,
       feishu,showFeishuBotModal,feishuBotForm,showAllowFromModal,allowFromId,allowFromScope,feishuDiag,diagFor,
@@ -1182,23 +1770,23 @@ createApp({
       showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,
       editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
       confirmDialog,askConfirm,
-      authToken,showAuthModal,authModalData,setAuthToken,confirmAuthToken,cancelAuthToken,
+      authToken,showAuthModal,authModalData,authRequired,setAuthToken,confirmAuthToken,cancelAuthToken,clearAuthToken,
       theme,toggleTheme,modelFilter,filteredGroups,
       refresh,apply,batchApply,resetSelection,probe,openCreate,createAgent,deleteAgent,
-      loadFiles,filterFiles,loadFileContent,saveFile,
-      loadBackups,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
-      loadFeishu,getFeishuBinding,openFeishuBotModal,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
+      showDefaultWsModal,defaultWsInput,defaultWsSaving,defaultWsError,openDefaultWsModal,saveDefaultWs,
+      ocInfo,ocRecentVersions,showOcUpdateModal,ocUpdateVersion,ocUpdateBusy,ocUpdateResult,openOcUpdateModal,doOcUpdate,loadOcInfo,
+      showInstallModal,installStatus,installForm,installBusy,installResult,openInstallModal,loadInstallStatus,installNodeLts,doInstallOpenclaw,
+      showAgentEditModal,agentEditForm,agentEditSaving,openAgentEditModal,closeAgentEditModal,applyAgentEdit,
+      agentEditNewId,agentRenaming,renameAgent,
+      showTemplateModal,templateTarget,templateSel,templateApplying,openTemplateModal,closeTemplateModal,applyTemplate,
+      agentTemplates,loadTemplates,
+      toolDenied,otherDenied,toggleTool,
+      loadFiles,filterFiles,loadFileContent,saveFile,filePath,enterDir,goUp,
+      loadBackups,manualBackup,backingUp,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
+      showAllBackups,toggleAllBackups,backupTotal,loadMoreLogs,
+      loadFeishu,getFeishuBinding,feishuAgents,feishuBotAllowFrom,botAllowFromInput,addBotAllowFrom,removeBotAllowFrom,openFeishuBotModal,openFeishuBotModalFor,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
       startFeishuReg,pollReg,saveRegBot,closeGuidedBot
     };
-  },
-  async mounted() {
-    // Probe auth status on first load. If server requires token and we
-    // don't have one stored, the next API call will trigger the modal.
-    try {
-      const r = await fetch('/api/auth/status');
-      const j = await r.json();
-      authRequired.value = !!j.required;
-    } catch {}
   }
 }).mount('#switcher-app');
 </script>

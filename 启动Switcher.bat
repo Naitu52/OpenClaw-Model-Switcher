@@ -1,19 +1,24 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title OpenClaw Model Switcher v6.1 (portable)
+title OpenClaw Model Switcher v6.5.2 (portable)
 cd /d "%~dp0"
+if not defined SWITCHER_PORT set "SWITCHER_PORT=2325"
 
 color 0B
 
 echo.
-echo   Model Switcher v6.1 (portable)
+echo   Model Switcher v6.5.2 (portable)
 echo   ==============================
 echo.
 
 node -e "const o=require('os'^);console.log('    platform:',process.platform,'  home:',o.homedir(^)^);" 2>nul
 
-node switcher.cjs
+if defined OPENCLAW_NODE (
+    "%OPENCLAW_NODE%" switcher.cjs
+) else (
+    node switcher.cjs
+)
 
 if %errorlevel% neq 0 (
     echo.

@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title OpenClaw Model Switcher v6.1 - Deploy
+title OpenClaw Model Switcher v6.5.2 - Deploy
 cd /d "%~dp0"
 
 color 0B
@@ -32,8 +32,9 @@ for /f "delims=" %%v in ('node --version') do set "NODE_VER=%%v"
 echo   Node:       %NODE_VER%
 set "NODE_VER_CLEAN=%NODE_VER:v=%"
 for /f "tokens=1 delims=." %%a in ("%NODE_VER_CLEAN%") do set "NODE_MAJOR=%%a"
+if not defined NODE_MAJOR set "NODE_MAJOR=0"
 if %NODE_MAJOR% lss 18 (
-    echo   [X] Node 18+ required (current %NODE_VER%).
+    echo   [X] Node 18+ required ^(current %NODE_VER%^).
     pause
     exit /b 1
 )
@@ -61,9 +62,9 @@ echo   OpenClaw detection (pre-install):
 set "HINT_HOME="
 set "HINT_CLI="
 set "HINT_CFG="
-if exist "D:\openclaw\.openclaw\openclaw.json" set "HINT_HOME=D:\openclaw\.openclaw" & set "HINT_CFG=D:\openclaw\.openclaw\openclaw.json"
-if not defined HINT_HOME if exist "%USERPROFILE%\.openclaw\openclaw.json" set "HINT_HOME=%USERPROFILE%\.openclaw" & set "HINT_CFG=%USERPROFILE%\.openclaw\openclaw.json"
-if not defined HINT_HOME if exist "%LOCALAPPDATA%\openclaw\openclaw.json" set "HINT_HOME=%LOCALAPPDATA%\openclaw" & set "HINT_CFG=%LOCALAPPDATA%\openclaw\openclaw.json"
+if exist "D:\openclaw\.openclaw\openclaw.json" (set "HINT_HOME=D:\openclaw\.openclaw" & set "HINT_CFG=D:\openclaw\.openclaw\openclaw.json")
+if not defined HINT_HOME if exist "%USERPROFILE%\.openclaw\openclaw.json" (set "HINT_HOME=%USERPROFILE%\.openclaw" & set "HINT_CFG=%USERPROFILE%\.openclaw\openclaw.json")
+if not defined HINT_HOME if exist "%LOCALAPPDATA%\openclaw\openclaw.json" (set "HINT_HOME=%LOCALAPPDATA%\openclaw" & set "HINT_CFG=%LOCALAPPDATA%\openclaw\openclaw.json")
 if not defined HINT_HOME (
     echo     home:      NOT detected
 ) else (
@@ -109,10 +110,10 @@ if not errorlevel 1 (
     where openclaw-switcher
     set "EXISTING_NONE=0"
 )
-npm ls -g --depth=0 openclaw-model-switcher >nul 2>&1
+call npm ls -g --depth=0 openclaw-model-switcher >nul 2>&1
 if not errorlevel 1 (
     echo   Detected global install:
-    npm ls -g --depth=0 openclaw-model-switcher
+    call npm ls -g --depth=0 openclaw-model-switcher
     set "EXISTING_NONE=0"
 )
 if "%EXISTING_NONE%"=="1" (
@@ -146,23 +147,15 @@ echo   ==========================================
 echo    Locate .tgz
 echo   ==========================================
 set "PKG="
-for %%f in (openclaw-model-switcher-*.tgz) do (
-    if not "%%~ff"=="" if "!PKG!"=="" set "PKG=%%~ff"
-)
+for %%f in (openclaw-model-switcher-*.tgz) do set "PKG=%%~ff"
 if "!PKG!"=="" (
     echo   No .tgz - auto-packing...
-    call npm pack 2>nul
-    if errorlevel 1 (
-        echo   [X] npm pack failed.
-        pause
-        exit /b 1
-    )
-    for %%f in (openclaw-model-switcher-*.tgz) do (
-        if not "%%~ff"=="" if "!PKG!"=="" set "PKG=%%~ff"
-    )
+    call npm pack 2>nul || goto :pack_failed
+    for %%f in (openclaw-model-switcher-*.tgz) do set "PKG=%%~ff"
+    if "!PKG!"=="" goto :pack_failed
     echo   ✓ Auto-generated: !PKG!
 ) else (
-    echo   ✓ Package: !PKG!
+    echo   ✓ Package: !PKG!  ^(newest .tgz in directory^)
 )
 
 echo.
@@ -171,32 +164,15 @@ echo    Installing
 echo   ==========================================
 if "!MODE!"=="1" (
     echo   Mode: global
-    call npm install -g "!PKG!"
-    if errorlevel 1 (
+    call npm install -g "!PKG!" || (
         echo   Global failed - falling back to local...
-        call npm install "!"
-        if errorlevel 1 (
-            echo   [X] Install failed. Try Run as Administrator.
-            pause
-            exit /b 1
-        )
-        set "MODE=2"
+        call npm install "!PKG!" || goto :install_failed
     )
 ) else if "!MODE!"=="2" (
-    call npm install "!PKG!"
-    if errorlevel 1 (
-        echo   [X] Install failed.
-        pause
-        exit /b 1
-    )
+    call npm install "!PKG!" || goto :install_failed
 ) else (
     echo   Mode: custom prefix=!PREFIX!
-    call npm install --prefix="!PREFIX!" "!PKG!"
-    if errorlevel 1 (
-        echo   [X] Install failed.
-        pause
-        exit /b 1
-    )
+    call npm install --prefix="!PREFIX!" "!PKG!" || goto :install_failed
 )
 
 echo.
@@ -205,16 +181,16 @@ echo    Post-Install Summary        (Phase C)
 echo   ==========================================
 echo   Mode:        !MODE!
 for /f "delims=" %%v in ('node -e "console.log(require('openclaw-model-switcher/package.json'^).version)" 2^>nul') do set "INSTALLED_VER=%%v"
-if "!INSTALLED_VER!"=="" set "INSTALLED_VER=6.1.0"
+if "!INSTALLED_VER!"=="" set "INSTALLED_VER=6.5.2"
 echo   Version:     !INSTALLED_VER!
 
 echo.
 echo   Smoke test:
-call npx --yes openclaw-model-switcher test 2>nul
-if errorlevel 1 (
+call node test\smoke.js
+if not "!errorlevel!"=="0" (
     echo     [!] Test issues - check output above
 ) else (
-    echo     ^>^> 6/6 passed
+    echo     ^>^> Smoke tests passed
 )
 
 echo.
@@ -244,8 +220,19 @@ echo   ==========================================
 echo.
 echo Press any key to LAUNCH now ^(Ctrl+C to skip^)^...
 pause >nul
-openclaw-switcher 2>nul
-if errorlevel 1 npx openclaw-switcher 2>nul
+call openclaw-switcher 2>nul
+if errorlevel 1 call npx openclaw-switcher 2>nul
 echo.
 echo Server stopped. Re-run anytime.
 pause
+exit /b 0
+
+:pack_failed
+echo   [X] npm pack failed.
+pause
+exit /b 1
+
+:install_failed
+echo   [X] Install failed. Try Run as Administrator.
+pause
+exit /b 1
