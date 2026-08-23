@@ -512,6 +512,8 @@ const OPENCLAW_PKG = 'openclaw';
 const NPM_BIN = (process.env.OPENCLAW_NPM || '').trim() || 'npm';
 const UPDATE_CACHE = { at: 0, data: null };   // 30s 缓存 npm 查询结果
 const UPDATE_CACHE_MS = 30000;
+// #10: 安装/更新进程内互斥（UI 有 installBusy，但 API 层并发概率仍存在）
+let installRunning = false;
 
 // 定位 npm-cli.js（npm.cmd 内部最终执行 node <dp0>\node_modules\npm\bin\npm-cli.js）。
 // 用 node 直接执行可完全避开 cmd.exe 的引号/空格拆词问题（C8：安装位置含空格时）。
@@ -587,8 +589,14 @@ function currentOpenclawVersion() {
 }
 
 // npm 查询：latest dist-tag + 全部历史版本（含 beta/rc）。带 30s 缓存。
+// #11: force 刷新加 5s 冷却——防连点打爆 npm registry，同时保留更新前强制验证的能力。
+let lastForceFetchAt = 0;
+const FORCE_FETCH_COOLDOWN_MS = 5000;
 async function queryOpenclawVersions(force) {
-  if (!force && UPDATE_CACHE.data && Date.now() - UPDATE_CACHE.at < UPDATE_CACHE_MS) return UPDATE_CACHE.data;
+  const now = Date.now();
+  if (!force && UPDATE_CACHE.data && now - UPDATE_CACHE.at < UPDATE_CACHE_MS) return UPDATE_CACHE.data;
+  if (force && UPDATE_CACHE.data && now - lastForceFetchAt < FORCE_FETCH_COOLDOWN_MS) return UPDATE_CACHE.data;
+  if (force) lastForceFetchAt = now;
   const latest = await runNpm(['view', OPENCLAW_PKG, 'version'], 30000);
   const versions = await runNpm(['view', OPENCLAW_PKG, 'versions', '--json'], 60000);
   let list = [];
@@ -737,15 +745,15 @@ function body(req) {
 //   2) 默认 agent（agents.list 中 default:true 的第一个，没有则 list 第一个，
 //      再没有才是 'main'——不按名字猜）→ defaults.workspace 或默认目录
 //   3) 非默认 agent → defaults.workspace/<id> 或 WS_ROOT/<id>
-function resolveAgentWorkspace(id) {
-  let cfg = {};
-  try { cfg = read(); } catch {}
-  const list = (cfg.agents?.list || []).filter(a => a && typeof a === 'object');
+// #9: 支持传入已读配置（cfg）避免 N+1 读盘；不传则内部读一次。
+function resolveAgentWorkspace(id, cfg) {
+  const c = cfg || (()=>{ try { return read(); } catch { return {}; } })();
+  const list = (c.agents?.list || []).filter(a => a && typeof a === 'object');
   const entry = list.find(a => a.id === id);
   if (entry?.workspace) return entry.workspace;
   const defs = list.filter(a => a.default);
   const defaultAgentId = String((defs.length ? defs[0] : list[0] || {}).id || 'main').trim();
-  const fallback = String(cfg.agents?.defaults?.workspace || '').trim();
+  const fallback = String(c.agents?.defaults?.workspace || '').trim();
   if (id === defaultAgentId) {
     if (fallback) return fallback;
     return WS_ROOT;  // 等价 openclaw 默认：OPENCLAW_WORKSPACE_DIR 或 ~/.openclaw/workspace
@@ -810,13 +818,13 @@ function getAgents() {
   let list = c.agents?.list || [];
   if(!list.length && fs.existsSync(AGENT_ROOT)) {
     list = fs.readdirSync(AGENT_ROOT).filter(d=>{try{return fs.statSync(path.join(AGENT_ROOT,d)).isDirectory();}catch{return false;}}).map(id=>{
-      const ws=resolveAgentWorkspace(id);
+      const ws=resolveAgentWorkspace(id, c);
       return {id,name:id,workspace:fs.existsSync(ws)?ws:'',agentDir:path.join(AGENT_ROOT,id,'agent')};
     });
   }
   return list.map(a=>{
     // openclaw 对默认 agent（main）不写 workspace 字段——按语义回退
-    const ws = resolveAgentWorkspace(a.id);
+    const ws = resolveAgentWorkspace(a.id, c);
     return {
       id:a.id, name:a.name||a.id,
       model:a.model?.primary||dm, default:dm,
@@ -924,8 +932,30 @@ function getBackups(all) {
   };
 }
 
-function getScenes() {
-  try { return JSON.parse(fs.readFileSync(SCENES,'utf8')); } catch(e) { return []; }
+// #5/#6: scenes 读取失败不静默丢数据——坏文件备份 + 抛错让调用方拒绝写；
+// 写入一律 tmp+rename 原子化（与主 config 一致）。
+function getScenesOrThrow() {
+  const raw = fs.readFileSync(SCENES,'utf8');
+  return JSON.parse(raw);
+}
+function readScenes() {
+  try { return { ok:true, scenes: getScenesOrThrow() }; }
+  catch(e) {
+    // 备份坏文件，防止后续基于空数组覆盖导致旧场景全丢
+    try {
+      const bak = `${SCENES}.corrupt-${new Date().toISOString().replace(/[:.]/g,'-')}`;
+      fs.copyFileSync(SCENES, bak);
+      log(`Scenes corrupt, backed up: ${path.basename(bak)} (${e.message})`);
+      return { ok:false, scenes:[], error:`scenes.json 解析失败，已备份到 ${path.basename(bak)}`, backup:path.basename(bak) };
+    } catch(bakErr) {
+      return { ok:false, scenes:[], error:'scenes.json 解析失败且无法备份: '+bakErr.message };
+    }
+  }
+}
+function writeScenes(scenes) {
+  const tmp=SCENES+'.new';
+  fs.writeFileSync(tmp, JSON.stringify(scenes,null,2), 'utf8');
+  fs.renameSync(tmp, SCENES);
 }
 
 function getLog(n=80) {
@@ -952,7 +982,7 @@ async function getStatus() {
     modelsTotal:cachedModels.length,
     modelsAvailable:cachedModels.filter(m=>m.available).length,
     backups:getBackups().total,
-    scenes:getScenes().length,
+    scenes:readScenes().scenes.length,
     defaultModel:c.agents?.defaults?.model?.primary||'N/A',
     defaultWorkspace:String(c.agents?.defaults?.workspace||'').trim()||WS_ROOT,
     defaultWorkspaceExplicit:!!String(c.agents?.defaults?.workspace||'').trim(),
@@ -1347,46 +1377,60 @@ const srv = http.createServer(async (req,res)=>{
     // 安装 openclaw：Body {prefix?, root?} — prefix=程序本体位置；root=数据根目录(生成 .openclaw/workspace)
     if(method==='POST'&&p==='/api/openclaw/install') {
       let b={}; try { b=await body(req); } catch(e) {}
-      const r=await doInstallOpenclaw(String(b.prefix||'').trim(), String(b.root||'').trim());
-      log(`OpenClaw install ${r.ok?'OK':'FAIL'} (prefix=${String(b.prefix||'').trim()||'(default)'} root=${String(b.root||'').trim()||'(none)'})`);
-      return json(res,r);
+      // #10: 与 update/install-node 互斥（进程内锁）
+      if(installRunning) return json(res,{ok:false,error:'已有安装/更新任务在进行中，请稍候'},409);
+      installRunning=true;
+      try {
+        const r=await doInstallOpenclaw(String(b.prefix||'').trim(), String(b.root||'').trim());
+        log(`OpenClaw install ${r.ok?'OK':'FAIL'} (prefix=${String(b.prefix||'').trim()||'(default)'} root=${String(b.root||'').trim()||'(none)'})`);
+        return json(res,r);
+      } finally { installRunning=false; }
     }
     // 一键安装 Node.js LTS（前置环境；仅 Windows + winget 可用时有效）
     if(method==='POST'&&p==='/api/openclaw/install/node') {
       if(process.platform!=='win32') return json(res,{ok:false,error:'仅 Windows 支持 winget 一键安装 Node'},400);
-      log('Node.js install start (winget)');
-      const r=await runNpm(['--version'], 5000); // 探测 npm 是否已存在（占位）
-      const w=await new Promise((resolve)=>{
-        try {
-          const c = require('child_process').spawn('winget',['install','-e','--id','OpenJS.NodeJS.LTS','--accept-source-agreements','--accept-package-agreements','--silent'],{windowsHide:true,shell:false});
-          let out='',err='',done=false;
-          const timer=setTimeout(()=>{ if(!done){done=true;try{c.kill();}catch{} resolve({out,err,timedOut:true});} },600000);
-          c.stdout.on('data',d=>{if(!done){out+=d;}});
-          c.stderr.on('data',d=>{if(!done)err+=d;});
-          c.on('error',e=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,error:e.message});}});
-          c.on('close',(code)=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,code});}});
-        } catch(e){ resolve({error:e.message}); }
-      });
-      const ok=!w.error&&!w.timedOut&&w.code===0;
-      log(`Node.js install ${ok?'OK':'FAIL'} (code=${w.code})`);
-      return json(res,{ok, code:w.code, error:w.error||(w.timedOut?'winget 安装超时（10 分钟）':'安装后请重启终端/服务以刷新 PATH'), output:(w.out+w.err).slice(-6000)});
+      // #10: 互斥
+      if(installRunning) return json(res,{ok:false,error:'已有安装/更新任务在进行中，请稍候'},409);
+      installRunning=true;
+      try {
+        log('Node.js install start (winget)');
+        const w=await new Promise((resolve)=>{
+          try {
+            const c = require('child_process').spawn('winget',['install','-e','--id','OpenJS.NodeJS.LTS','--accept-source-agreements','--accept-package-agreements','--silent'],{windowsHide:true,shell:false});
+            let out='',err='',done=false;
+            const timer=setTimeout(()=>{ if(!done){done=true;try{c.kill();}catch{} resolve({out,err,timedOut:true});} },600000);
+            c.stdout.on('data',d=>{if(!done){out+=d;}});
+            c.stderr.on('data',d=>{if(!done)err+=d;});
+            c.on('error',e=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,error:e.message});}});
+            c.on('close',(code)=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,code});}});
+          } catch(e){ resolve({error:e.message}); }
+        });
+        const ok=!w.error&&!w.timedOut&&w.code===0;
+        log(`Node.js install ${ok?'OK':'FAIL'} (code=${w.code})`);
+        return json(res,{ok, code:w.code, error:w.error||(w.timedOut?'winget 安装超时（10 分钟）':'安装后请重启终端/服务以刷新 PATH'), output:(w.out+w.err).slice(-6000)});
+      } finally { installRunning=false; }
     }
     if(method==='POST'&&p==='/api/openclaw/update') {
       let b={}; try { b=await body(req); } catch(e) {}
-      const want=String(b.version||'').trim();
-      if(want && !validVersion(want)) return json(res,{ok:false,error:'版本号格式非法'},400);
-      if(want){
-        // 必须存在于 npm 历史版本列表（防任意包/路径注入）
-        const info=await queryOpenclawVersions(true);
-        if(!(info.versions||[]).includes(want) && want!==info.latest)
-          return json(res,{ok:false,error:`版本 ${want} 不在 npm 历史版本列表中`},400);
-      }
-      const args=['install','-g', want ? `${OPENCLAW_PKG}@${want}` : OPENCLAW_PKG];
-      log(`OpenClaw update start: ${want||'latest'}`);
-      const r=await runNpm(args, 240000);   // npm install -g 最多 4 分钟
-      const ok = !r.error && !r.timedOut && r.code===0;
-      log(`OpenClaw update ${ok?'OK':'FAIL'} ${want||'latest'} (code=${r.code})`);
-      return json(res,{ok, code:r.code, error:r.error||(r.timedOut?'npm 超时':null), output:(r.out+r.err).slice(-6000)});
+      // #10: 互斥
+      if(installRunning) return json(res,{ok:false,error:'已有安装/更新任务在进行中，请稍候'},409);
+      installRunning=true;
+      try {
+        const want=String(b.version||'').trim();
+        if(want && !validVersion(want)) return json(res,{ok:false,error:'版本号格式非法'},400);
+        if(want){
+          // 必须存在于 npm 历史版本列表（防任意包/路径注入）
+          const info=await queryOpenclawVersions(true);
+          if(!(info.versions||[]).includes(want) && want!==info.latest)
+            return json(res,{ok:false,error:`版本 ${want} 不在 npm 历史版本列表中`},400);
+        }
+        const args=['install','-g', want ? `${OPENCLAW_PKG}@${want}` : OPENCLAW_PKG];
+        log(`OpenClaw update start: ${want||'latest'}`);
+        const r=await runNpm(args, 240000);   // npm install -g 最多 4 分钟
+        const ok = !r.error && !r.timedOut && r.code===0;
+        log(`OpenClaw update ${ok?'OK':'FAIL'} ${want||'latest'} (code=${r.code})`);
+        return json(res,{ok, code:r.code, error:r.error||(r.timedOut?'npm 超时':null), output:(r.out+r.err).slice(-6000)});
+      } finally { installRunning=false; }
     }
     // 新建 Agent 的模板列表：现存 Agent（真实 agent，来自 agents.list，而非
     // workspace 目录——那里混着 data/media/temp 等非 agent 文件夹）
@@ -1418,6 +1462,22 @@ const srv = http.createServer(async (req,res)=>{
           recommended.push({name:e.name,label:label||e.name});
         }
       } catch{}
+      // #7: 自定义模板目录 OPENCLAW_WS/_templates/（README 承诺"自动出现"，
+      //     后端 create/apply 本就支持该来源，仅列表漏了）
+      for(const customRoot of [path.join(WS_ROOT,'_templates')]){
+        try {
+          for(const e of fs.readdirSync(customRoot,{withFileTypes:true})) {
+            if(!e.isDirectory() || e.name.startsWith('.')) continue;
+            if(recommended.some(t=>t.name===e.name)) continue;   // 去重（覆盖同名内置）
+            let label='';
+            try {
+              const m=fs.readFileSync(path.join(customRoot,e.name,'IDENTITY.md'),'utf8').match(/-\s*\*\*Name:\*\*\s*(.+)/);
+              if(m) label=m[1].trim();
+            } catch{}
+            recommended.push({name:e.name,label:label||e.name+'（自定义）'});
+          }
+        } catch{}
+      }
       existing.sort((a,b)=>a.localeCompare(b));
       recommended.sort((a,b)=>a.label.localeCompare(b.label));
       return json(res,{existing,recommended});
@@ -1452,7 +1512,11 @@ const srv = http.createServer(async (req,res)=>{
     if(method==='GET'&&p==='/api/providers') return json(res,getProviders());
     if(method==='GET'&&p==='/api/providers/catalog') return json(res,getCatalogWithModels());
     if(method==='GET'&&p==='/api/backups') return json(res,getBackups(q.all==='1'||q.all==='true'));
-    if(method==='GET'&&p==='/api/scenes') return json(res,getScenes());
+    if(method==='GET'&&p==='/api/scenes') {
+      const r=readScenes();
+      if(!r.ok) return json(res,{ok:false,error:r.error},500);
+      return json(res,r.scenes);
+    }
     if(method==='GET'&&p==='/api/log') return json(res,{lines:getLog(q.lines||80)});
       if(method==='GET'&&p==='/api/paths') return json(res,{backupDir:BACKUP_DIR,log:LOG,scenes:SCENES,openclawHome:OPENCLAW_HOME,userData:USER_DATA_DIR});
     const fm=p.match(/^\/api\/agent\/([^/]+)\/files$/);
@@ -1626,26 +1690,34 @@ const srv = http.createServer(async (req,res)=>{
         // Same validation as create: '..' / absolute paths would make rmSync
         // delete arbitrary directories (path traversal -> data loss).
         if(!id || !validateAgentId(id)) return json(res,{ok:false,error:'Invalid agent id (must start with a letter, 2-30 chars)'},400);
-        // C2: 默认 agent 保护——删除会改变路由/工作区根的解析语义
-        const cDel=read();
-        const delDefaultId=resolveDefaultAgentId(cDel);
-        if(id===delDefaultId) return json(res,{ok:false,error:`「${id}」是当前默认 agent，不可直接删除。请先在编辑中把默认标记移到其他 agent，或先创建替代 agent。`},400);
-        [path.join(WS_ROOT,id),path.join(AGENT_ROOT,id)].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch(e){}});
-        const c=read();
-        if(c.agents?.list) c.agents.list=c.agents.list.filter(x=>x.id!==id);
-        if(c.channels?.feishu?.accounts) delete c.channels.feishu.accounts[`${id}_bot`];
-        if(c.bindings) c.bindings=c.bindings.filter(x=>x.agentId!==id);
-        // 同步清理场景配置里的死键（与 rename 的迁移对称）
+        // #3: 配置修改全部走 mutate（串行化）；目录删除在配置写成功后执行——
+        // 配置写失败则 agent 原样保留；目录删除失败只留磁盘垃圾，可重试。
+        const rr=await mutate((c)=>{
+          // C2: 默认 agent 保护——删除会改变路由/工作区根的解析语义
+          const delDefaultId=resolveDefaultAgentId(c);
+          if(id===delDefaultId) return {ok:false,error:`「${id}」是当前默认 agent，不可直接删除。请先在编辑中把默认标记移到其他 agent，或先创建替代 agent。`};
+          const e=c.agents?.list?.find(a=>a.id===id);
+          if(!e) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
+          if(c.agents.list) c.agents.list=c.agents.list.filter(x=>x.id!==id);
+          if(c.channels?.feishu?.accounts) delete c.channels.feishu.accounts[`${id}_bot`];
+          if(c.bindings) c.bindings=c.bindings.filter(x=>x.agentId!==id);
+          return {ok:true};
+        });
+        if(!rr.ok) return json(res,rr, rr.code===E.NOT_FOUND?404:400);
+        // 配置已删 → 清理场景死键（与 rename 的迁移对称）
         try {
-          const scenesPath=SCENES;
-          if(fs.existsSync(scenesPath)){
-            const scenes=JSON.parse(fs.readFileSync(scenesPath,'utf8'));
-            let changed=false;
-            for(const s of scenes){ if(s&&s.config&&s.config[id]!==undefined){ delete s.config[id]; changed=true; } }
-            if(changed){ fs.writeFileSync(scenesPath,JSON.stringify(scenes,null,2),'utf8'); log(`Scene cleanup after delete: ${id}`); }
+          if(fs.existsSync(SCENES)){
+            const sr=readScenes();
+            if(sr.ok){
+              let changed=false;
+              for(const s of sr.scenes){ if(s&&s.config&&s.config[id]!==undefined){ delete s.config[id]; changed=true; } }
+              if(changed){ writeScenes(sr.scenes); log(`Scene cleanup after delete: ${id}`); }
+            }
           }
         } catch{}
-        write(c); log(`Delete: ${id}`);
+        // 目录删除（失败只留垃圾，不影响配置一致性）
+        [path.join(WS_ROOT,id),path.join(AGENT_ROOT,id)].forEach(p=>{try{fs.rmSync(p,{recursive:true,force:true})}catch(e){}});
+        log(`Delete: ${id}`);
         return json(res,{ok:true});
       }
       // 更新 Agent 基本信息：显示名 / 默认模型 / 默认 Agent 标记 / 工作区
@@ -1655,8 +1727,9 @@ const srv = http.createServer(async (req,res)=>{
       if(p==='/api/agent/update') {
         const {id, name, model, default: isDefault, workspace}=b;
         if(!id || !validateAgentId(id)) return json(res,{ok:false,error:'Invalid agent id'},400);
-        // —— 工作区变更：目录迁移必须在写配置前完成（失败则配置不变） ——
-        let wsReport=[], wsTarget=null, wsChanged=false;
+        // —— 工作区变更：校验在锁外（快速失败），迁移+写入在 mutate 锁内完成，
+        //    失败回滚目录，保证「目录与配置要么都新要么都旧」（#4 原子性）。 ——
+        let wsRequest = null;   // {current, wsTarget, rootWs, others} 锁外预检结果
         if(workspace!==undefined){
           const c0=read();
           const e0=(c0.agents?.list||[]).find(a=>a.id===id);
@@ -1670,6 +1743,7 @@ const srv = http.createServer(async (req,res)=>{
           if(path.resolve(current)===path.resolve(WS_ROOT) && !String(c0.agents?.defaults?.workspace||'').trim())
             return json(res,{ok:false,error:`「${id}」当前使用 openclaw 默认工作区根目录（${current}），不能自动迁移。请先变更默认工作区或手动移动目录。`},400);
           const raw=String(workspace||'').trim();
+          let wsTarget;
           if(raw){
             const v=validateWorkspacePath(raw);
             if(!v.ok) return json(res,{ok:false,error:v.error},400);
@@ -1694,21 +1768,35 @@ const srv = http.createServer(async (req,res)=>{
             const childOf=others.find(x=>x.ws!==cur && x.ws.startsWith(cur+path.sep));
             if(childOf)
               return json(res,{ok:false,error:`当前工作区 ${current} 是 agent「${childOf.id}」工作区的父目录，迁移会拖走其他 agent 数据。请先手动整理目录结构。`},400);
-            const m=migrateWorkspaceDir(current, wsTarget);
-            if(!m.ok) return json(res,{ok:false,error:m.error},400);
-            wsReport=m.report; wsChanged=true;
+            wsRequest={current, wsTarget};
           }
         }
         const rr = await mutate((c)=>{
           const e=(c.agents?.list||[]).find(a=>a.id===id);
           if(!e) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
+          // #4: 目录迁移在锁内、写配置前完成；任何后续失败都回滚目录（配置不变）
+          let wsReport=[], wsChanged=false;
+          if(wsRequest){
+            const m=migrateWorkspaceDir(wsRequest.current, wsRequest.wsTarget);
+            if(!m.ok) return {ok:false,error:m.error};
+            wsReport=m.report; wsChanged=true;
+          }
+          // 后续校验失败 → 回滚已迁移的目录
+          const rollbackWs = () => {
+            if(wsChanged){
+              try {
+                if(fs.existsSync(wsRequest.wsTarget)) fs.renameSync(wsRequest.wsTarget, wsRequest.current);
+                wsChanged=false;
+              } catch {}
+            }
+          };
           if(name!==undefined){
             const n=String(name).trim();
             e.name = n ? n : id;   // 空名回退 id
           }
           if(model!==undefined){
             const m=String(model).trim();
-            if(!m) return {ok:false,error:'模型不能为空'};
+            if(!m){ rollbackWs(); return {ok:false,error:'模型不能为空'}; }
             if(!e.model) e.model={};
             e.model.primary=m;
             // 同步注册表（与 doSwitch 一致）
@@ -1742,13 +1830,13 @@ const srv = http.createServer(async (req,res)=>{
             else { delete e.default; }
           }
           if(workspace!==undefined){
-            if(String(workspace||'').trim()) e.workspace=wsTarget;
+            if(String(workspace||'').trim()) e.workspace=wsRequest.wsTarget;
             else delete e.workspace;   // 恢复默认解析
           }
-          return {ok:true,id};
+          return {ok:true,id, wsReport, wsChanged};
         });
-        if (rr.ok) log(`Update agent ${id}${wsChanged?' (workspace: '+wsReport.join('; ')+')':''}`);
-        if(rr.ok && wsChanged) rr.report=wsReport;
+        if (rr.ok) log(`Update agent ${id}${rr.wsChanged?' (workspace: '+rr.wsReport.join('; ')+')':''}`);
+        if(rr.ok && rr.wsChanged) rr.report=rr.wsReport;
         return json(res, rr);
       }
       // 变更 openclaw 默认工作区（agents.defaults.workspace）。
@@ -1779,6 +1867,8 @@ const srv = http.createServer(async (req,res)=>{
       //   workspace 目录 / agents 目录(含会话) / 配置字段 / bindings /
       //   飞书账号键(旧id_bot→新id_bot) / scenes.json 键
       // 默认 agent（main）禁止重命名（openclaw 有 'main' 硬编码回退）。
+      // #3/#4: 整体包进 mutate（串行化）；目录迁移在锁内完成，任一步失败
+      //        回滚已迁移目录且不写配置（原子性）。
       if(p==='/api/agent/rename') {
         const {id, newId}=b;
         if(!id || !validateAgentId(id)) return json(res,{ok:false,error:'Invalid agent id'},400);
@@ -1786,78 +1876,90 @@ const srv = http.createServer(async (req,res)=>{
         if(newId===id) return json(res,{ok:false,error:'新旧 id 相同'},400);
         if(id==='main') return json(res,{ok:false,error:'默认 agent（main）不可重命名'},400);
         try {
-          const c=read();
-          const entry=(c.agents?.list||[]).find(a=>a.id===id);
-          if(!entry) return json(res,{ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND},404);
-          const defs = (c.agents?.list||[]).filter(a=>a&&a.default);
-          const defaultAgentId = String((defs.length?defs[0]:(c.agents?.list||[])[0]||{}).id||'main').trim();
-          if(id===defaultAgentId && !entry.default)
-            return json(res,{ok:false,error:'当前默认 agent（无 default 标记的首个 agent）不可重命名，请先另设默认'},400);
-          if((c.agents?.list||[]).some(a=>a.id===newId)) return json(res,{ok:false,error:`id 已存在: ${newId}`},400);
-          // C1: 工作区迁移按「真实解析位置」计算，而非硬编码 WS_ROOT/<id>：
-          //   - 无显式 workspace（走 defaults.workspace/<id>）→ 目标 = defaults.workspace/<newId>
-          //   - 显式 workspace 且末段目录名 == id（如 D:\openclaw\workspace\mybot）→ 同级改名为 <newId>
-          //   - 自定义路径与 id 无关（如 D:\projects\blog）→ 不迁移（显式路径优先，rename 不影响）
-          const norm = p => String(p||'').replace(/[\\/]+$/,'');
-          const curWs = resolveAgentWorkspace(id);
-          let oldWs = null, newWs = null;
-          if (entry.workspace) {
-            const w = norm(entry.workspace);
-            if (path.basename(w) === id) { oldWs = w; newWs = path.join(path.dirname(w), newId); }
-          } else {
-            oldWs = curWs;
-            newWs = resolveDefaultWorkspaceFor(c, newId);
-          }
-          if(newWs && fs.existsSync(newWs)) return json(res,{ok:false,error:`目标工作区已存在: ${newWs}`},400);
-          const oldAgentDir=path.join(AGENT_ROOT,id), newAgentDir=path.join(AGENT_ROOT,newId);
-          if(fs.existsSync(newAgentDir)) return json(res,{ok:false,error:`目标 agent 目录已存在: ${newAgentDir}`},400);
+          const rr = await mutate((c)=>{
+            const entry=(c.agents?.list||[]).find(a=>a.id===id);
+            if(!entry) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
+            const defs = (c.agents?.list||[]).filter(a=>a&&a.default);
+            const defaultAgentId = String((defs.length?defs[0]:(c.agents?.list||[])[0]||{}).id||'main').trim();
+            if(id===defaultAgentId && !entry.default)
+              return {ok:false,error:'当前默认 agent（无 default 标记的首个 agent）不可重命名，请先另设默认'};
+            if((c.agents?.list||[]).some(a=>a.id===newId)) return {ok:false,error:`id 已存在: ${newId}`};
+            // C1: 工作区迁移按「真实解析位置」计算，而非硬编码 WS_ROOT/<id>：
+            //   - 无显式 workspace（走 defaults.workspace/<id>）→ 目标 = defaults.workspace/<newId>
+            //   - 显式 workspace 且末段目录名 == id（如 D:\openclaw\workspace\mybot）→ 同级改名为 <newId>
+            //   - 自定义路径与 id 无关（如 D:\projects\blog）→ 不迁移（显式路径优先，rename 不影响）
+            const norm = p => String(p||'').replace(/[\\/]+$/,'');
+            const curWs = resolveAgentWorkspace(id);
+            let oldWs = null, newWs = null;
+            if (entry.workspace) {
+              const w = norm(entry.workspace);
+              if (path.basename(w) === id) { oldWs = w; newWs = path.join(path.dirname(w), newId); }
+            } else {
+              oldWs = curWs;
+              newWs = resolveDefaultWorkspaceFor(c, newId);
+            }
+            if(newWs && fs.existsSync(newWs)) return {ok:false,error:`目标工作区已存在: ${newWs}`};
+            const oldAgentDir=path.join(AGENT_ROOT,id), newAgentDir=path.join(AGENT_ROOT,newId);
+            if(fs.existsSync(newAgentDir)) return {ok:false,error:`目标 agent 目录已存在: ${newAgentDir}`};
 
-          const report=[];
-          // 1) workspace 目录改名（oldWs/newWs 可能为 null：自定义路径与 id 无关时不动）
-          if(oldWs && newWs && fs.existsSync(oldWs) && path.resolve(oldWs)!==path.resolve(newWs)){
-            fs.renameSync(oldWs,newWs); report.push('workspace 目录');
-          }
-          // 2) agents 目录改名（含 agent/ 与 sessions/）
-          if(fs.existsSync(oldAgentDir)){ fs.renameSync(oldAgentDir,newAgentDir); report.push('agent 目录(含会话)'); }
-          // 3) 配置字段
-          if(entry){
-            entry.id=newId;
-            if(!entry.name || entry.name===id) entry.name=newId;
-            if(entry.workspace && newWs && norm(entry.workspace)===oldWs) entry.workspace=newWs;
-            if(entry.agentDir){
-              const n=norm(entry.agentDir);
-              // 兼容两种写法：.../agents/<id> 与 .../agents/<id>/agent
-              if(n===oldAgentDir) entry.agentDir=newAgentDir;
-              else if(n===path.join(AGENT_ROOT,id,'agent')) entry.agentDir=path.join(AGENT_ROOT,newId,'agent');
+            const report=[];
+            const moved=[];   // 已迁移的目录（失败回滚用）
+            try {
+              // 1) workspace 目录改名（oldWs/newWs 可能为 null：自定义路径与 id 无关时不动）
+              if(oldWs && newWs && fs.existsSync(oldWs) && path.resolve(oldWs)!==path.resolve(newWs)){
+                fs.renameSync(oldWs,newWs); moved.push({from:oldWs,to:newWs}); report.push('workspace 目录');
+              }
+              // 2) agents 目录改名（含 agent/ 与 sessions/）
+              if(fs.existsSync(oldAgentDir)){
+                fs.renameSync(oldAgentDir,newAgentDir); moved.push({from:oldAgentDir,to:newAgentDir}); report.push('agent 目录(含会话)');
+              }
+            } catch(e) {
+              // 回滚已迁移的目录
+              for(const m of moved.reverse()){ try{ fs.renameSync(m.to,m.from); }catch{} }
+              return {ok:false,error:'目录迁移失败（已回滚）: '+e.message};
             }
-          }
-          // 4) bindings（agentId + 飞书账号 accountId）
-          let bindingsChanged=0;
-          if(c.bindings) for(const x of c.bindings){
-            if(x.agentId===id){ x.agentId=newId; bindingsChanged++; }
-            if(x.match?.accountId===`${id}_bot`){ x.match.accountId=`${newId}_bot`; bindingsChanged++; }
-          }
-          if(bindingsChanged) report.push('路由绑定');
-          // 5) 飞书账号键 oldid_bot → newid_bot
-          const oldKey=`${id}_bot`, newKey=`${newId}_bot`;
-          if(c.channels?.feishu?.accounts && c.channels.feishu.accounts[oldKey]){
-            c.channels.feishu.accounts[newKey]=c.channels.feishu.accounts[oldKey];
-            delete c.channels.feishu.accounts[oldKey];
-            report.push('飞书账号');
-          }
-          // 6) scenes.json 键迁移（switcher 自己的场景文件）
-          try {
-            const scenesPath=SCENES;
-            if(fs.existsSync(scenesPath)){
-              const scenes=JSON.parse(fs.readFileSync(scenesPath,'utf8'));
-              let changed=false;
-              for(const s of scenes){ if(s&&s.config&&s.config[id]!==undefined){ s.config[newId]=s.config[id]; delete s.config[id]; changed=true; } }
-              if(changed){ fs.writeFileSync(scenesPath,JSON.stringify(scenes,null,2),'utf8'); report.push('场景配置'); }
+            // 3) 配置字段
+            if(entry){
+              entry.id=newId;
+              if(!entry.name || entry.name===id) entry.name=newId;
+              if(entry.workspace && newWs && norm(entry.workspace)===oldWs) entry.workspace=newWs;
+              if(entry.agentDir){
+                const n=norm(entry.agentDir);
+                // 兼容两种写法：.../agents/<id> 与 .../agents/<id>/agent
+                if(n===oldAgentDir) entry.agentDir=newAgentDir;
+                else if(n===path.join(AGENT_ROOT,id,'agent')) entry.agentDir=path.join(AGENT_ROOT,newId,'agent');
+              }
             }
-          } catch{}
-          write(c);
-          log(`Rename agent: ${id} -> ${newId} (${report.join(', ')||'配置'})`);
-          return json(res,{ok:true,oldId:id,newId,report});
+            // 4) bindings（agentId + 飞书账号 accountId）
+            let bindingsChanged=0;
+            if(c.bindings) for(const x of c.bindings){
+              if(x.agentId===id){ x.agentId=newId; bindingsChanged++; }
+              if(x.match?.accountId===`${id}_bot`){ x.match.accountId=`${newId}_bot`; bindingsChanged++; }
+            }
+            if(bindingsChanged) report.push('路由绑定');
+            // 5) 飞书账号键 oldid_bot → newid_bot
+            const oldKey=`${id}_bot`, newKey=`${newId}_bot`;
+            if(c.channels?.feishu?.accounts && c.channels.feishu.accounts[oldKey]){
+              c.channels.feishu.accounts[newKey]=c.channels.feishu.accounts[oldKey];
+              delete c.channels.feishu.accounts[oldKey];
+              report.push('飞书账号');
+            }
+            // 6) scenes.json 键迁移（switcher 自己的场景文件；坏文件不迁移、不覆盖）
+            try {
+              if(fs.existsSync(SCENES)){
+                const sr=readScenes();
+                if(sr.ok){
+                  let changed=false;
+                  for(const s of sr.scenes){ if(s&&s.config&&s.config[id]!==undefined){ s.config[newId]=s.config[id]; delete s.config[id]; changed=true; } }
+                  if(changed){ writeScenes(sr.scenes); report.push('场景配置'); }
+                }
+              }
+            } catch{}
+            return {ok:true, oldId:id, newId, report};
+          });
+          if(!rr.ok) return json(res,rr, rr.code===E.NOT_FOUND?404:400);
+          log(`Rename agent: ${id} -> ${newId} (${rr.report.join(', ')||'配置'})`);
+          return json(res,{ok:true,oldId:id,newId,report:rr.report});
         } catch(e){
           return json(res,{ok:false,error:'重命名失败: '+e.message},500);
         }
@@ -1934,23 +2036,31 @@ const srv = http.createServer(async (req,res)=>{
         return json(res,{status:'ok'});
       }
       if(p==='/api/scenes/save') {
-        const scenes=getScenes();
+        const r=readScenes();
+        if(!r.ok) return json(res,{ok:false,error:r.error},500);
+        const scenes=r.scenes;
         // 如果同名场景存在则覆盖
         const idx=scenes.findIndex(x=>x.name===b.name);
         const entry={name:b.name,timestamp:ts(),config:b.config};
         if(idx>=0) scenes[idx]=entry; else scenes.push(entry);
-        fs.writeFileSync(SCENES,JSON.stringify(scenes,null,2),'utf8'); log(`Scene save: ${b.name}`);
+        try { writeScenes(scenes); } catch(e){ return json(res,{ok:false,error:'场景保存失败: '+e.message},500); }
+        log(`Scene save: ${b.name}`);
         return json(res,{status:'ok'});
       }
       if(p==='/api/scenes/apply') {
-        const scenes=getScenes(); const s=scenes.find(x=>x.name===b.name);
+        const r=readScenes();
+        if(!r.ok) return json(res,{ok:false,error:r.error},500);
+        const s=r.scenes.find(x=>x.name===b.name);
         if(!s) return json(res,{error:'Scene not found'},404);
         const n=await doSwitch(s.config||{});   // await: response must not race the write
         return json(res,{status:'ok',changed:n});
       }
       if(p==='/api/scenes/delete') {
-        const scenes=getScenes().filter(x=>x.name!==b.name);
-        fs.writeFileSync(SCENES,JSON.stringify(scenes,null,2),'utf8'); log(`Scene delete: ${b.name}`);
+        const r=readScenes();
+        if(!r.ok) return json(res,{ok:false,error:r.error},500);
+        const scenes=r.scenes.filter(x=>x.name!==b.name);
+        try { writeScenes(scenes); } catch(e){ return json(res,{ok:false,error:'场景删除失败: '+e.message},500); }
+        log(`Scene delete: ${b.name}`);
         return json(res,{status:'ok'});
       }
 

@@ -1296,7 +1296,8 @@ createApp({
         const body = {id:f.id};
         if(f.name && f.name !== f.id) body.name = f.name;
         if(f.model) body.model = f.model;
-        if(f.isDefault) body.default = true;
+        // 仅当默认标记状态变化时发送（勾选 true / 取消 false）；没动就不发，避免误删默认
+        if(!!f.isDefault !== !!agents.value.find(x=>x.id===f.id)?.isDefault) body.default = !!f.isDefault;
         // workspace：只有与当前解析值不同才发送；空串 = 恢复默认
         if(String(f.workspace||'').trim() !== (agents.value.find(x=>x.id===f.id)?.workspace||'')) body.workspace = String(f.workspace||'').trim();
         const d = await api('/api/agent/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
