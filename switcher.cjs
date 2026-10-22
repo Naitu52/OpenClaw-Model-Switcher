@@ -2132,19 +2132,20 @@ const srv = http.createServer(async (req,res)=>{
           try { resolve(json(res, data)); }
           catch (e) { try { res.end(); } catch {} }
         };
+        // pid 探测：gateway 启动时把状态写进 tmp/openclaw/gateway.state.lock（含 pid），
+        // 直接读文件即可。原来的 spawnSync powershell 每个探针要 700~900ms，
+        // 而这个接口是前端每 10 秒打一次。
+        // 必须在发 HTTP 请求**之前**读 —— health 超时/报错时也要知道进程活没活。
+        let pid = null;
+        try {
+          const lk = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw', 'gateway.state.lock');
+          const j = JSON.parse(fs.readFileSync(lk,'utf8'));
+          const p = j && Number.isFinite(j.pid) ? j.pid : null;
+          // process.kill(pid,0) 只探测存活、不发信号
+          if (p) { try { process.kill(p, 0); pid = p; } catch(e){} }
+        } catch (e) {}
         const req = http.get('http://127.0.0.1:18888/health', { timeout: 3000 }, r => {
           let body = ''; r.on('data', d => body += d); r.on('end', () => {
-            // pid 探测：gateway 启动时把状态写进 tmp/openclaw/gateway.state.lock（含 pid），
-            // 直接读文件即可。原来的 spawnSync powershell 每个探针要 700~900ms，
-            // 而这个接口是前端每 10 秒打一次。
-            let pid = null;
-            try {
-              const lk = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw', 'gateway.state.lock');
-              const j = JSON.parse(fs.readFileSync(lk,'utf8'));
-              const p = j && Number.isFinite(j.pid) ? j.pid : null;
-              // process.kill(pid,0) 只探测存活、不发信号
-              if (p) { try { process.kill(p, 0); pid = p; } catch(e){} }
-            } catch (e) {}
             // 「up」= gateway 进程还活着；「responsive」= health 端点有没有应答。
             // 两者必须分开：gateway 启动/重建 agent 库时要忙好几分钟，
             // 那期间 /health 会超时，但进程好好地活着 —— 用 health 当 up 会误报成「已挂」。
@@ -2155,8 +2156,8 @@ const srv = http.createServer(async (req,res)=>{
             });
           });
         });
-        req.on('error', () => reply({ up: false, pid: null }));
-        req.on('timeout', () => { req.destroy(); reply({ up: false, pid: null, error: 'timeout' }); });
+        req.on('error', () => reply({ up: pid !== null, responsive: false, pid }));
+        req.on('timeout', () => { req.destroy(); reply({ up: pid !== null, responsive: false, pid, error: 'timeout' }); });
         // 客户端断开,取消 gateway 请求,不再尝试写响应
         res.on('close', () => { req.destroy(); responded = true; });
       });
