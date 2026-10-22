@@ -1,8 +1,11 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title OpenClaw Model Switcher v6.5.3 - Deploy
 cd /d "%~dp0"
+REM Read version from package.json so the displayed version never drifts from the real one.
+for /f "delims=" %%v in ('node -e "console.log(require('./package.json').version)" 2^>nul') do set "SW_VER=%%v"
+if not defined SW_VER set "SW_VER=?"
+title OpenClaw Model Switcher v%SW_VER% - Deploy
 
 color 0B
 
