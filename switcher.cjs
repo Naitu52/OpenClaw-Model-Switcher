@@ -2145,7 +2145,14 @@ const srv = http.createServer(async (req,res)=>{
               // process.kill(pid,0) 只探测存活、不发信号
               if (p) { try { process.kill(p, 0); pid = p; } catch(e){} }
             } catch (e) {}
-            reply({ up: r.statusCode === 200, pid, status: r.statusCode, body: body.slice(0, 80) });
+            // 「up」= gateway 进程还活着；「responsive」= health 端点有没有应答。
+            // 两者必须分开：gateway 启动/重建 agent 库时要忙好几分钟，
+            // 那期间 /health 会超时，但进程好好地活着 —— 用 health 当 up 会误报成「已挂」。
+            reply({
+              up: pid !== null || r.statusCode === 200,
+              responsive: r.statusCode === 200,
+              pid, status: r.statusCode, body: body.slice(0, 80)
+            });
           });
         });
         req.on('error', () => reply({ up: false, pid: null }));
