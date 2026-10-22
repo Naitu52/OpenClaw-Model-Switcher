@@ -738,6 +738,65 @@ const OPENCLAW_PKG = 'openclaw';
 const NPM_BIN = (process.env.OPENCLAW_NPM || '').trim() || 'npm';
 const UPDATE_CACHE = { at: 0, data: null };   // 30s 缓存 npm 查询结果
 const UPDATE_CACHE_MS = 30000;
+
+// npm 11 起默认不执行 install scripts。openclaw 的 postinstall 负责恢复捆绑插件和
+// fs-safe 的预编译原生二进制；不放行的话 gateway 启动会报
+// "Cannot find module '@openclaw/fs-safe/advanced'"。所以全局安装必须显式放行。
+let npmMajorCache = null;
+async function npmMajorVersion(){
+  if (npmMajorCache !== null) return npmMajorCache;
+  const r = await runNpm(['--version'], 20000);
+  const v = parseInt(String((r && r.out) || '').trim(), 10);
+  npmMajorCache = Number.isFinite(v) ? v : 0;
+  return npmMajorCache;
+}
+async function npmAllowScriptsArg(){
+  return (await npmMajorVersion()) >= 11 ? ['--allow-scripts=' + OPENCLAW_PKG] : [];
+}
+
+// 目标版本要求的 node 范围 vs 当前 node —— 不满足就提前拦，
+// 别让 npm 跑一两分钟才在 openclaw 的 preinstall 里报错。
+function parseSemver(v){
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(v || '').trim());
+  return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null;
+}
+function cmpSemver(a, b){
+  for (let i = 0; i < 3; i++) { if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1; }
+  return 0;
+}
+function satisfiesComparator(ver, cmp){
+  const m = /^(>=|<=|>|<|=)?\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?$/.exec(String(cmp || '').trim());
+  if (!m) return true;               // 不认识的写法一律放行 —— 宁可漏拦，不误拦
+  const op = m[1] || '=';
+  const target = [Number(m[2]), m[3] === undefined ? 0 : Number(m[3]), m[4] === undefined ? 0 : Number(m[4])];
+  const c = cmpSemver(ver, target);
+  if (op === '>=') return c >= 0;
+  if (op === '>')  return c > 0;
+  if (op === '<=') return c <= 0;
+  if (op === '<')  return c < 0;
+  return c === 0;
+}
+function nodeSatisfies(ver, range){
+  const s = String(range || '').trim();
+  if (!s) return true;
+  const cur = parseSemver(ver);
+  if (!cur) return true;
+  return s.split('||').some((branch) => {
+    const parts = branch.trim().split(/\s+/).filter(Boolean);
+    return parts.every((p) => satisfiesComparator(cur, p));
+  });
+}
+async function checkNodeEngineFor(version){
+  const spec = version ? `${OPENCLAW_PKG}@${version}` : OPENCLAW_PKG;
+  const r = await runNpm(['view', spec, 'engines', '--json'], 60000);
+  let eng = null;
+  try { eng = JSON.parse(String((r && r.out) || '').trim()); } catch { eng = null; }
+  const range = eng && eng.node ? String(eng.node) : '';
+  if (!range) return { ok:true, range:'', current:process.version };
+  if (nodeSatisfies(process.version, range)) return { ok:true, range, current:process.version };
+  return { ok:false, range, current:process.version,
+    error:`当前 Node ${process.version} 不满足 openclaw ${version || 'latest'} 的要求（需要 ${range}）。请先用「安装 Node.js LTS」升级 Node，再回来更新。` };
+}
 // #10: 安装/更新进程内互斥（UI 有 installBusy，但 API 层并发概率仍存在）
 let installRunning = false;
 
@@ -954,7 +1013,7 @@ async function doInstallOpenclaw(prefix, root) {
     if (set.error || set.code !== 0) return { ok:false, error:'设置 npm prefix 失败: '+(set.error||set.err||'unknown') };
   }
   // 2) 安装 openclaw 程序本体
-  const args = ['install','-g','openclaw'];
+  const args = ['install','-g', ...(await npmAllowScriptsArg()), 'openclaw'];
   const r = await runNpm(args, 300000);
   const ok = !r.error && !r.timedOut && r.code===0;
   // 3) 数据根目录：创建 .openclaw + workspace，设置 OPENCLAW_HOME
@@ -1902,7 +1961,11 @@ const srv = http.createServer(async (req,res)=>{
           const info=await queryOpenclawVersions(true);
           if(!(info.versions||[]).includes(want) && want!==info.latest){ ocUpdateFinish(false,'版本不在 npm 历史版本列表中'); return json(res,{ok:false,error:`版本 ${want} 不在 npm 历史版本列表中`},400); }
         }
-        const args=['install','-g', want ? `${OPENCLAW_PKG}@${want}` : OPENCLAW_PKG];
+        // 先校验目标版本的 node 要求，不满足就提前拦（否则 npm 要跑 1~2 分钟才失败）
+        const eng = await checkNodeEngineFor(want);
+        if (!eng.ok) { ocUpdateFinish(false, eng.error); return json(res,{ok:false,error:eng.error},400); }
+        if (eng.range) ocUpdatePush(`· Node 要求 ${eng.range}（当前 ${eng.current}，满足）`);
+        const args=['install','-g', ...(await npmAllowScriptsArg()), want ? `${OPENCLAW_PKG}@${want}` : OPENCLAW_PKG];
         log(`OpenClaw update start: ${want||'latest'}`);
         const r=await runNpm(args, 240000, (chunk)=>ocUpdatePush(chunk));   // npm install -g 最多 4 分钟
         const ok = !r.error && !r.timedOut && r.code===0;
