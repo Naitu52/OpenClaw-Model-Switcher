@@ -1,4 +1,4 @@
-# OpenClaw Model Switcher v6.5.2 — Portable Edition
+# OpenClaw Model Switcher v6.5.3 — Portable Edition
 
 **OpenClaw 一站式管理面板**：Agent / 模型 / 供应商 / 飞书 Bot / 工作区 / openclaw 本体维护。
 零依赖 Web UI（本地 Vue 打包，无 CDN），直接读写 `openclaw.json`（原子写入 + 自动备份），

@@ -57,7 +57,7 @@ try {
         -Trigger $trigger `
         -Principal $principal `
         -Settings $settings `
-        -Description "OpenClaw Model Switcher v6.5.2 - auto start, auto restart on failure" `
+        -Description "OpenClaw Model Switcher v$((Get-Content (Join-Path $PSScriptRoot 'package.json') -Raw | ConvertFrom-Json).version) - auto start, auto restart on failure" `
         -Force | Out-Null
 
     Log "✓ Register-ScheduledTask OK"

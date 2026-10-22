@@ -1,7 +1,7 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title OpenClaw Model Switcher v6.5.2 - Deploy
+title OpenClaw Model Switcher v6.5.3 - Deploy
 cd /d "%~dp0"
 
 color 0B
@@ -181,7 +181,7 @@ echo    Post-Install Summary        (Phase C)
 echo   ==========================================
 echo   Mode:        !MODE!
 for /f "delims=" %%v in ('node -e "console.log(require('openclaw-model-switcher/package.json'^).version)" 2^>nul') do set "INSTALLED_VER=%%v"
-if "!INSTALLED_VER!"=="" set "INSTALLED_VER=6.5.2"
+if "!INSTALLED_VER!"=="" set "INSTALLED_VER=6.5.3"
 echo   Version:     !INSTALLED_VER!
 
 echo.

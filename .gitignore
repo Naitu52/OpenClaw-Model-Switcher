@@ -3,3 +3,8 @@ node_modules/
 *.log
 *.tgz
 scenes.json
+# 本地备份/临时产物（不上库）
+*.pre-*
+*.old.stale
+__pycache__/
+*.pyc

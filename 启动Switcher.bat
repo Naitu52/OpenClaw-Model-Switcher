@@ -1,14 +1,17 @@
 @echo off
 setlocal EnableDelayedExpansion
 chcp 65001 >nul
-title OpenClaw Model Switcher v6.5.2 (portable)
 cd /d "%~dp0"
+rem 版本号从 package.json 读，避免显示的版本与实际发布版本脱节
+for /f "delims=" %%v in ('node -p "require('./package.json').version" 2^>nul') do set "SW_VER=%%v"
+if not defined SW_VER set "SW_VER=?"
+title OpenClaw Model Switcher v%SW_VER% (portable)
 if not defined SWITCHER_PORT set "SWITCHER_PORT=2325"
 
 color 0B
 
 echo.
-echo   Model Switcher v6.5.2 (portable)
+echo   Model Switcher v%SW_VER% (portable)
 echo   ==============================
 echo.
 

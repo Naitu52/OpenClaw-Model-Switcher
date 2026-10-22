@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# OpenClaw Model Switcher v6.5.2 - portable launcher (macOS / Linux)
+# OpenClaw Model Switcher - portable launcher (macOS / Linux)
 #
 # Usage:
 #   ./启动Switcher.sh                              # default port 2325
@@ -13,8 +13,11 @@
 set -e
 cd "$(dirname "$0")"
 
+# 版本号从 package.json 读，避免显示的版本与实际发布版本脱节
+SW_VER="$(node -p "require('./package.json').version" 2>/dev/null || echo '?')"
+
 echo
-echo "  Model Switcher v6.5.2 (portable)"
+echo "  Model Switcher v$SW_VER (portable)"
 echo "  =============================="
 echo
 

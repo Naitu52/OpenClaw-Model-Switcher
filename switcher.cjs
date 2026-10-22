@@ -308,6 +308,15 @@ const SCENES     = process.env.SWITCHER_SCENES     || path.join(USER_DATA_DIR, '
 let PORT = parseInt(process.env.SWITCHER_PORT) || 2325;
 const MAX_PORT_TRIES = 10;
 
+// 兜底：未捕获异常 / 拒绝 promise 不再静默退出 —— 把 stack 写日志并继续跑。
+// 不修老问题，只确保以后再崩也能看到原因。
+process.on('uncaughtException', (e) => {
+  try { log(`UNCAUGHT: ${e?.stack || e}`); } catch {}
+});
+process.on('unhandledRejection', (e) => {
+  try { log(`UNHANDLED-REJECTION: ${e?.stack || e}`); } catch {}
+});
+
 // Node binary used for every CLI invocation: OPENCLAW_NODE > process.execPath.
 // process.execPath is the node that launched THIS process — always resolvable,
 // unlike bare 'node' which depends on PATH and silently fails under the
@@ -316,7 +325,7 @@ const NODE_BIN = (process.env.OPENCLAW_NODE || '').trim() || process.execPath;
 
 // Package version, surfaced via /api/status so the UI badge never drifts.
 const PACKAGE_VERSION = (() => {
-  try { return require(path.join(SCRIPT_DIR, 'package.json')).version; } catch { return '6.5.2'; }
+  try { return require(path.join(SCRIPT_DIR, 'package.json')).version; } catch { return '6.5.3'; }
 })();
 
 // Boot diagnostic
@@ -374,6 +383,7 @@ function read() { return JSON.parse(fs.readFileSync(CONFIG,'utf8')); }
 let writeChain = Promise.resolve();
 let lastBackupAt = 0;
 const BACKUP_DEBOUNCE_MS = 3000;  // skip backup if last backup was within 3s
+const BACKUP_KEEP = 20;          // 快照保留份数（100 份 = 14MB，20 份足够回滚）
 async function mutate(fn) {
   const prev = writeChain;
   let release;
@@ -387,6 +397,38 @@ async function mutate(fn) {
   } finally {
     release();
   }
+}
+
+// 同步版 mutate（用于 secrets 迁移这种：内部多次 set + 一次写）。注意：调用方要确保不与 mutate 并发。
+function mutateSync(fn) {
+  const cfg = read();
+  const result = fn(cfg);
+  if (result === false) return false;
+  write(cfg);
+  return result !== undefined ? result : true;
+}
+
+// 递归 diff 两个 JSON 对象，返回 [{path, op, oldVal, newVal}] 列表。
+// op ∈ {added, removed, changed}。只记录叶子节点差异。
+function computeJsonDiff(a, b, prefix) {
+  const out = [];
+  const seen = new Set();
+  if (a && typeof a === 'object' && b && typeof b === 'object' && !Array.isArray(a) && !Array.isArray(b)) {
+    for (const k of new Set([...Object.keys(a), ...Object.keys(b)])) {
+      const ap = prefix ? `${prefix}.${k}` : k;
+      seen.add(k);
+      if (!(k in a)) out.push({ path: ap, op: 'added', newVal: b[k] });
+      else if (!(k in b)) out.push({ path: ap, op: 'removed', oldVal: a[k] });
+      else if (typeof a[k] === 'object' && typeof b[k] === 'object' && a[k] && b[k] && !Array.isArray(a[k]) && !Array.isArray(b[k])) {
+        out.push(...computeJsonDiff(a[k], b[k], ap));
+      } else if (JSON.stringify(a[k]) !== JSON.stringify(b[k])) {
+        out.push({ path: ap, op: 'changed', oldVal: a[k], newVal: b[k] });
+      }
+    }
+  } else if (JSON.stringify(a) !== JSON.stringify(b)) {
+    out.push({ path: prefix || '<root>', op: 'changed', oldVal: a, newVal: b });
+  }
+  return out;
 }
 
 // #6b: scenes 文件独立串行链——readScenes+writeScenes 全程在锁内，
@@ -409,13 +451,21 @@ async function mutateScenes(fn) {
 }
 
 function write(cfg) {
+  // 内容没变就完全不碰文件。
+  // openclaw.json 的 mtime 变化会被 gateway 的配置 watcher 捕获；一旦改到
+  // models.providers.*.models 就会触发整机重启（实测停机 200~330s）。
+  // 所以只有内容真的变了才写、才清缓存、才备份。
+  const next = JSON.stringify(cfg,null,2);
+  let cur = null;
+  try { cur = fs.readFileSync(CONFIG,'utf8'); } catch(e){}
+  if (cur !== null && cur === next) return false;
   // 配置已变更：CLI 模型列表缓存与飞书诊断缓存立即失效，
   // 否则 probe/update 之后最多滞后 10s/15s（非实时）。
   modelsCache = null; modelsCacheAt = 0;
   diagCache = null; diagCacheAt = 0;
   provAvailCache = null; provAvailCacheAt = 0;
   const tmp=CONFIG+'.new';
-  fs.writeFileSync(tmp,JSON.stringify(cfg,null,2),'utf8');
+  fs.writeFileSync(tmp,next,'utf8');
   fs.renameSync(tmp,CONFIG);
   if(!fs.existsSync(BACKUP_DIR)) fs.mkdirSync(BACKUP_DIR,{recursive:true});
   // Debounce: skip backup if one was made very recently (avoids 3 backups
@@ -425,7 +475,8 @@ function write(cfg) {
     const bak=path.join(BACKUP_DIR,`openclaw-${new Date().toISOString().replace(/[:.]/g,'-')}.json`);
     try { fs.copyFileSync(CONFIG,bak); lastBackupAt = now; } catch(e) {}
   }
-  try { fs.readdirSync(BACKUP_DIR).filter(x=>x.endsWith('.json')).sort().reverse().slice(100).forEach(f=>fs.unlinkSync(path.join(BACKUP_DIR,f))); } catch(e) {}
+  try { fs.readdirSync(BACKUP_DIR).filter(x=>x.endsWith('.json')).sort().reverse().slice(BACKUP_KEEP).forEach(f=>fs.unlinkSync(path.join(BACKUP_DIR,f))); } catch(e) {}
+  return true;
 }
 
 // ---- Error codes (stable, machine-readable) ----
@@ -461,6 +512,99 @@ function validateProviderId(id) {
     && id.trim() === id;
 }
 
+// ============================================================================
+// 2026.9+ openclaw 适配：agents.list (array) → agents.entries (keyed),
+//                          agents.defaults.models (dict) → modelPolicy.allow (array)
+// 详见 README "OpenClaw 2026.9+ Compatibility" 段
+// ============================================================================
+
+// 读 agents.entries (keyed object) → 数组形式 [{id, ...entry}]
+// openclaw 2026.9 把 agents.list (array) 改为 agents.entries (keyed map)：
+//   旧: agents.list = [{id:"main", model:{primary:"..."}, workspace:"..."}, ...]
+//   新: agents.entries = { main: {model:{primary:"..."}, workspace:"..."}, ... }
+// 用这个 helper 保留老代码语义（list 数组、.id 字段、.find/.filter）。
+function entriesAsList(c) {
+  const e = c && c.agents && c.agents.entries;
+  if (e && typeof e === 'object' && !Array.isArray(e)) {
+    return Object.entries(e).map(([id, v]) => Object.assign({ id }, v || {}));
+  }
+  // Fallback: 旧结构 agents.list 数组仍存在时（升级半途状态）照样要能列出 agent，
+  // 否则 dashboard 会显示 0 个 agent，且依赖 agent 的保护逻辑（如 provider 删除
+  // 的 in-use 判定）会失效。
+  const l = c && c.agents && c.agents.list;
+  if (Array.isArray(l)) return l.filter(a => a && typeof a === 'object').map(a => Object.assign({}, a));
+  return [];
+}
+
+// 从 c.agents.entries 取单个 entry (兼容 list 旧形态做 fallback)
+function entryById(c, id) {
+  if (!c || !c.agents) return undefined;
+  if (c.agents.entries && Object.prototype.hasOwnProperty.call(c.agents.entries, id)) {
+    return Object.assign({ id }, c.agents.entries[id] || {});
+  }
+  // Fallback: 老结构 agents.list 仍存在时（升级半途状态）
+  if (Array.isArray(c.agents.list)) {
+    return c.agents.list.find(a => a && a.id === id);
+  }
+  return undefined;
+}
+
+// 取默认 agent id：先 default:true 标记的，没有就 list/entries 第一个，再没有 'main'
+function resolveDefaultAgentId(c) {
+  const list = entriesAsList(c);
+  const defs = list.filter(a => a.default);
+  return String((defs.length ? defs[0] : list[0] || {}).id || 'main').trim();
+}
+
+// 写入/删除单个 agent entry
+function setEntry(c, id, entry) {
+  if (!c.agents) c.agents = { defaults: {}, entries: {} };
+  if (!c.agents.entries || typeof c.agents.entries !== 'object') c.agents.entries = {};
+  if (entry === null || entry === undefined) {
+    delete c.agents.entries[id];
+  } else {
+    // entry 不应含 id 字段（id 已经在 key 里）
+    const { id: _drop, ...rest } = entry;
+    c.agents.entries[id] = rest;
+  }
+  return c.agents.entries[id];
+}
+function deleteEntry(c, id) {
+  if (c && c.agents && c.agents.entries) delete c.agents.entries[id];
+}
+
+// ---- model policy (替代老的 agents.defaults.models dict) ----
+// openclaw 2026.9+ 用 agents.defaults.modelPolicy.allow (字符串数组)
+// 表达"可用模型白名单"，老代码用 agents.defaults.models[key]={} (dict)
+// 作为"已注册模型" 集合；用 helper 把两种写法都支持。
+function getAllowList(c) {
+  const mp = c && c.agents && c.agents.defaults && c.agents.defaults.modelPolicy;
+  if (mp && Array.isArray(mp.allow)) return mp.allow;
+  // Fallback: 老结构 agents.defaults.models 的 key 集合（升级未完成时）
+  const m = c && c.agents && c.agents.defaults && c.agents.defaults.models;
+  if (m && typeof m === 'object') return Object.keys(m);
+  return [];
+}
+function ensureModelPolicy(c) {
+  if (!c.agents) c.agents = {};
+  if (!c.agents.defaults) c.agents.defaults = {};
+  if (!c.agents.defaults.modelPolicy) c.agents.defaults.modelPolicy = {};
+  if (!Array.isArray(c.agents.defaults.modelPolicy.allow)) c.agents.defaults.modelPolicy.allow = [];
+  return c.agents.defaults.modelPolicy.allow;
+}
+function addModelToAllowList(c, modelKey) {
+  const allow = ensureModelPolicy(c);
+  if (!allow.includes(modelKey)) allow.push(modelKey);
+}
+function removeModelFromAllowList(c, modelKey) {
+  const allow = ensureModelPolicy(c);
+  const i = allow.indexOf(modelKey);
+  if (i >= 0) allow.splice(i, 1);
+}
+function hasModelInAllowList(c, modelKey) {
+  return getAllowList(c).includes(modelKey);
+}
+
 // Feishu account keys must be safe identifiers: openclaw normalizes illegal
 // characters (observed: ':' → '-'), so a key like 'v1:eyJhb_bot' never
 // matches → account stays "not configured, stopped". Force keys to
@@ -483,9 +627,17 @@ function json(res,data,code=200) {
 
 // Mask secrets: short values never leak through the overlapping-slice bug.
 function maskSecret(s) {
-  if (!s) return '';
-  if (s.length <= 8) return '••••••';
-  return s.slice(0, 4) + '●●●' + s.slice(-4);
+  if (s === null || s === undefined || s === '') return '';
+  // SecretRef 对象形式（{source, provider, id}）不是明文串，显示引用来源而不是值。
+  // 旧代码直接 s.slice() 会抛 "s.slice is not a function"，把整个接口打成 500。
+  if (typeof s === 'object') {
+    const src = s.source || 'ref';
+    const prov = s.provider ? ':' + s.provider : '';
+    return '🔒 ' + src + prov;
+  }
+  const str = String(s);
+  if (str.length <= 8) return '••••••';
+  return str.slice(0, 4) + '●●●' + str.slice(-4);
 }
 
 // Resolve `rel` inside `root` and refuse anything that escapes it
@@ -497,10 +649,61 @@ function resolveWithin(root, rel) {
   return fp;
 }
 
+// Async PowerShell runner: spawn, bounded output, hard timeout.
+// Used by gateway-restart to find/kill node + drive the scheduled task.
+// CRITICAL: write script to temp file and pass via -File (not -Command) —
+// passing complex PS via -Command mangles quotes/backticks in Windows arg parsing.
+function runPowerShell(script, timeoutMs = 30000) {
+  return new Promise((resolve) => {
+    let out = '', err = '', done = false, child, tmp;
+    try {
+      tmp = path.join(os.tmpdir(), `ps-${Date.now()}-${process.pid}.ps1`);
+      fs.writeFileSync(tmp, script, 'utf8');
+      // 调试用：把每次的 ps 脚本也写到 switcher.log 方便诊断
+      try { log(`PS script (${script.length} chars): ${script.replace(/\s+/g, ' ').slice(0, 200)}...`); } catch (_) {}
+      child = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-File', tmp], { windowsHide: true });
+    } catch (e) {
+      try { if (tmp) fs.unlinkSync(tmp); } catch {}
+      return resolve({ out: '', err: String(e), error: e.message });
+    }
+    const timer = setTimeout(() => {
+      if (!done) { done = true; killTree(child.pid); resolve({ out, err, timedOut: true }); }
+    }, timeoutMs);
+    child.stdout.on('data', d => { if (!done) out += d; });
+    child.stderr.on('data', d => { if (!done) err += d; });
+    child.on('error', e => { if (!done) { done = true; clearTimeout(timer); try { if (tmp) fs.unlinkSync(tmp); } catch {} resolve({ out, err, error: e.message }); } });
+    child.on('close', () => { if (!done) { done = true; clearTimeout(timer); try { if (tmp) fs.unlinkSync(tmp); } catch {} resolve({ out, err }); } });
+  });
+}
+
+// 杀掉整棵进程树，而不是只杀父进程。
+// openclaw CLI 会再 spawn 一个 node 子进程（--stack-size=8192 那个），
+// 只 child.kill() 父进程的话孙进程会活下来，一直占着 openclaw.sqlite 的写事务；
+// 几个叠加就会把 gateway 饿死（症状：/health 要 30s+ 才响应、channels status 报
+// "database is locked" / WAL checkpoint blocked）。
+function killTree(pid){
+  if(!pid) return;
+  try{
+    if(process.platform === 'win32'){
+      const r = spawn('taskkill', ['/PID', String(pid), '/T', '/F'], { windowsHide:true, stdio:'ignore' });
+      r.on('error', ()=>{});
+    } else {
+      try { process.kill(-pid, 'SIGKILL'); }
+      catch(e){ try { process.kill(pid, 'SIGKILL'); } catch(e2){} }
+    }
+  }catch(e){ /* 进程已退出 */ }
+}
+
+// 同一命令并发去重：dashboard 有 10s / 30s 两个轮询器，
+// gateway 一慢就会叠出一堆同款 CLI 进程互相抢锁。
+const CLI_INFLIGHT = new Map();
+
 // Async CLI runner: spawn (never blocks the event loop), bounded output,
 // hard timeout, structured result. Used by getModels + diagnostics.
 function runCli(args, timeoutMs, maxOut = 4 * 1024 * 1024) {
-  return new Promise((resolve) => {
+  const key = args.join('|');
+  if (CLI_INFLIGHT.has(key)) return CLI_INFLIGHT.get(key);
+  const p = new Promise((resolve) => {
     let out = '', err = '', done = false, child;
     try {
       child = spawn(NODE_BIN, args, { windowsHide: true });
@@ -508,17 +711,21 @@ function runCli(args, timeoutMs, maxOut = 4 * 1024 * 1024) {
       return resolve({ out: '', err: String(e), error: e.message });
     }
     const timer = setTimeout(() => {
-      if (!done) { done = true; try { child.kill(); } catch {} resolve({ out, err, timedOut: true }); }
+      if (!done) { done = true; killTree(child.pid); resolve({ out, err, timedOut: true }); }
     }, timeoutMs);
     child.stdout.on('data', d => {
       if (done) return;
       out += d;
-      if (out.length > maxOut) { try { child.kill(); } catch {} }
+      if (out.length > maxOut) { done = true; clearTimeout(timer); killTree(child.pid); resolve({ out, err }); }
     });
     child.stderr.on('data', d => { if (!done) err += d; });
     child.on('error', e => { if (!done) { done = true; clearTimeout(timer); resolve({ out, err, error: e.message }); } });
     child.on('close', () => { if (!done) { done = true; clearTimeout(timer); resolve({ out, err }); } });
   });
+  CLI_INFLIGHT.set(key, p);
+  p.then(() => { if (CLI_INFLIGHT.get(key) === p) CLI_INFLIGHT.delete(key); },
+         () => { if (CLI_INFLIGHT.get(key) === p) CLI_INFLIGHT.delete(key); });
+  return p;
 }
 
 function cliMissing() { return !CLI || !fs.existsSync(CLI); }
@@ -534,6 +741,53 @@ const UPDATE_CACHE_MS = 30000;
 // #10: 安装/更新进程内互斥（UI 有 installBusy，但 API 层并发概率仍存在）
 let installRunning = false;
 
+// ---- openclaw 更新实时进度缓冲 ----
+// npm install -g 是同步阻塞的（最多 4 分钟），输出原本全部缓冲到结束才返回，
+// 前端只能看到「更新中...」然后突然蹦出结果。这里把 npm 的 stdout/stderr
+// 实时收进缓冲，提供 /api/openclaw/update/progress 供前端轮询渲染。
+const OC_UPDATE_MAX_LINES = 400;
+let ocUpdateProgress = { running:false, version:'', startedAt:0, finishedAt:0, ok:null, error:null, lines:[] };
+// 持久化到磁盘：switcher 重启后仍能回看上一次更新的完整输出
+const OC_UPDATE_LOG_FILE = path.join(USER_DATA_DIR, 'last-update.json');
+let ocUpdateLastSave = 0;
+function ocUpdatePersist(force){
+  const now = Date.now();
+  if (!force && now - ocUpdateLastSave < 800) return;
+  ocUpdateLastSave = now;
+  try {
+    fs.mkdirSync(path.dirname(OC_UPDATE_LOG_FILE), { recursive:true });
+    fs.writeFileSync(OC_UPDATE_LOG_FILE, JSON.stringify(ocUpdateProgress), 'utf8');
+  } catch(e){ /* 持久化失败不影响主流程 */ }
+}
+function ocUpdateLoadPersisted(){
+  try {
+    if (!fs.existsSync(OC_UPDATE_LOG_FILE)) return;
+    const j = JSON.parse(fs.readFileSync(OC_UPDATE_LOG_FILE,'utf8'));
+    if (j && Array.isArray(j.lines)) ocUpdateProgress = Object.assign({}, ocUpdateProgress, j, { running:false });
+  } catch(e){ /* 读不到就用空态 */ }
+}
+function ocUpdateReset(version){
+  ocUpdateProgress = { running:true, version:String(version||'latest'), startedAt:Date.now(), finishedAt:0, ok:null, error:null, lines:[] };
+  ocUpdatePersist(true);
+}
+function ocUpdatePush(chunk){
+  if (chunk === null || chunk === undefined) return;
+  const text = String(chunk).replace(/\r\n/g,'\n').replace(/\r/g,'\n');
+  for (const line of text.split('\n')) {
+    const t = line.trimEnd();
+    if (!t.trim()) continue;
+    ocUpdateProgress.lines.push(t);
+  }
+  while (ocUpdateProgress.lines.length > OC_UPDATE_MAX_LINES) ocUpdateProgress.lines.shift();
+  ocUpdatePersist(false);
+}
+function ocUpdateFinish(ok, error){
+  ocUpdateProgress.running = false;
+  ocUpdateProgress.finishedAt = Date.now();
+  ocUpdateProgress.ok = !!ok;
+  ocUpdateProgress.error = error || null;
+  ocUpdatePersist(true);
+}
 // 定位 npm-cli.js（npm.cmd 内部最终执行 node <dp0>\node_modules\npm\bin\npm-cli.js）。
 // 用 node 直接执行可完全避开 cmd.exe 的引号/空格拆词问题（C8：安装位置含空格时）。
 let npmCliResolved = null;
@@ -557,7 +811,7 @@ function resolveNpmCli() {
   return null;
 }
 
-function runNpm(args, timeoutMs) {
+function runNpm(args, timeoutMs, onChunk) {
   return new Promise((resolve) => {
     let out = '', err = '', done = false, child;
     const cli = resolveNpmCli();
@@ -581,10 +835,10 @@ function runNpm(args, timeoutMs) {
       }
     }
     const timer = setTimeout(() => {
-      if (!done) { done = true; try { child.kill(); } catch {} resolve({ out, err, timedOut: true }); }
+      if (!done) { done = true; killTree(child.pid); resolve({ out, err, timedOut: true }); }
     }, timeoutMs);
-    child.stdout.on('data', d => { if (!done) { out += d; if (out.length > 8*1024*1024) { try { child.kill(); } catch {} } } });
-    child.stderr.on('data', d => { if (!done) err += d; });
+    child.stdout.on('data', d => { if (!done) { out += d; if (onChunk) { try { onChunk(String(d)); } catch {} } if (out.length > 8*1024*1024) { done = true; clearTimeout(timer); killTree(child.pid); resolve({ out, err }); } } });
+    child.stderr.on('data', d => { if (!done) { err += d; if (onChunk) { try { onChunk(String(d)); } catch {} } } });
     child.on('error', e => { if (!done) { done = true; clearTimeout(timer); resolve({ out, err, error: e.message }); } });
     child.on('close', (code) => { if (!done) { done = true; clearTimeout(timer); resolve({ out, err, code }); } });
   });
@@ -667,7 +921,7 @@ async function getInstallStatus(force) {
         const c = require('child_process').spawn('where',['winget'],{windowsHide:true});
         c.on('error', ()=>resolve(false));
         c.on('close', (code)=>resolve(code===0));
-        setTimeout(()=>{ try{c.kill();}catch{} resolve(false); }, 5000);
+        setTimeout(()=>{ killTree(c.pid); resolve(false); }, 5000);
       } catch { resolve(false); }
     });
   }
@@ -732,7 +986,7 @@ async function doInstallOpenclaw(prefix, root) {
           try {
             const c = require('child_process').spawn('setx',['OPENCLAW_HOME', homeDir], {windowsHide:true, shell:false});
             let out='',err='',done=false;
-            const timer=setTimeout(()=>{ if(!done){done=true;try{c.kill();}catch{} resolve({out,err,timedOut:true});} },15000);
+            const timer=setTimeout(()=>{ if(!done){done=true;killTree(c.pid); resolve({out,err,timedOut:true});} },15000);
             c.stdout.on('data',d=>{if(!done)out+=d;});
             c.stderr.on('data',d=>{if(!done)err+=d;});
             c.on('error',e=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,error:e.message});}});
@@ -767,7 +1021,7 @@ function body(req) {
 // #9: 支持传入已读配置（cfg）避免 N+1 读盘；不传则内部读一次。
 function resolveAgentWorkspace(id, cfg) {
   const c = cfg || (()=>{ try { return read(); } catch { return {}; } })();
-  const list = (c.agents?.list || []).filter(a => a && typeof a === 'object');
+  const list = entriesAsList(c);
   const entry = list.find(a => a.id === id);
   if (entry?.workspace) return entry.workspace;
   const defs = list.filter(a => a.default);
@@ -782,11 +1036,7 @@ function resolveAgentWorkspace(id, cfg) {
 }
 
 // 计算默认 agent id（对齐 resolveAgentWorkspace 的语义）
-function resolveDefaultAgentId(cfg) {
-  const list = (cfg?.agents?.list || []).filter(a => a && typeof a === 'object');
-  const defs = list.filter(a => a.default);
-  return String((defs.length ? defs[0] : list[0] || {}).id || 'main').trim();
-}
+// (重定义在下面 entriesAsList 之后；这里保留 stub 防止旧引用找不到——新版定义在 L475 之后)
 
 // 计算 agent 未显式配置 workspace 时的默认路径（defaults.workspace/<id> 或 WS_ROOT/<id>；
 // 默认 agent 直接用 defaults.workspace 或 WS_ROOT）
@@ -834,7 +1084,7 @@ function migrateWorkspaceDir(oldWs, newWs) {
 function getAgents() {
   let c; try { c=read(); } catch(e) { return []; }
   const dm = c.agents?.defaults?.model?.primary || 'minimax/MiniMax-M3';
-  let list = c.agents?.list || [];
+  let list = entriesAsList(c);
   if(!list.length && fs.existsSync(AGENT_ROOT)) {
     list = fs.readdirSync(AGENT_ROOT).filter(d=>{try{return fs.statSync(path.join(AGENT_ROOT,d)).isDirectory();}catch{return false;}}).map(id=>{
       const ws=resolveAgentWorkspace(id, c);
@@ -871,12 +1121,22 @@ let diagCacheAt = 0;
 let provAvailCache = null;
 let provAvailCacheAt = 0;
 
+// 取 model 列表 — 2026.9+ 适配：
+// openclaw 把"可用模型"从 CLI 探测改为 agents.defaults.modelPolicy.allow 静态列表。
+// 优先用 CLI（保持旧行为 + 探测最新），失败/慢时回退到读 modelPolicy.allow。
 async function getModels(q) {
-  let r;
-  if (cliMissing()) return null;
   const now = Date.now();
-  if (!modelsCache || now - modelsCacheAt > MODELS_CACHE_MS) {
-    const res = await runCli([CLI, 'models', 'list', '--all', '--json'], 15000);
+  let r = null;
+  if (!cliMissing() && (!modelsCache || now - modelsCacheAt > MODELS_CACHE_MS)) {
+    // 2026.9+ 的 openclaw models list 必须指定 --agent，否则会报
+    // "Multiple agents are configured, but model inspection has no explicit owner"。
+    // 优先从 openclaw.json 拿默认 agent id；拿不到用 'main' 兜底。
+    let defaultAgent = 'main';
+    try {
+      const cc = read();
+      defaultAgent = resolveDefaultAgentId(cc) || 'main';
+    } catch {}
+    const res = await runCli([CLI, 'models', 'list', '--all', '--json', '--agent', defaultAgent], 15000);
     try { r = JSON.parse(res.out); } catch (e) {
       log(`Models CLI parse fail: out=${res.out.length}B stderr=${JSON.stringify((res.err||'').slice(0,200))} error=${res.error||'none'} timedOut=${!!res.timedOut} cli=${CLI} node=${NODE_BIN}`);
       r = null;
@@ -885,6 +1145,14 @@ async function getModels(q) {
     else { modelsCache = null; r = null; }
   } else {
     r = modelsCache;
+  }
+  // Fallback: 直接从 openclaw.json 读 modelPolicy.allow（2026.9+ 路径）
+  if (!r) {
+    try {
+      const cc = read();
+      const allow = getAllowList(cc);
+      r = { models: allow.map(key => ({ key, name: key, provider: String(key).split('/')[0] })) };
+    } catch {}
   }
   if (!r) return [];
   let c; try { c=read(); } catch(e) { c={}; }
@@ -902,6 +1170,41 @@ async function getModels(q) {
     hasKey:keyed.has(String(m.key||'').split('/')[0]),
     ctx:m.contextWindow, input:m.input
   }));
+}
+
+// 按点号路径读取配置子树，支持 a.b.c 与 a.b[0].c（与 openclaw `config get --json <path>` 一致）
+function resolveConfigPath(obj, path) {
+  const parts = String(path).split('.').filter(Boolean);
+  let cur = obj;
+  for (const part of parts) {
+    if (cur === null || cur === undefined) return undefined;
+    const m = /^([^\[\]]+)((?:\[\d+\])*)$/.exec(part);
+    if (!m) return undefined;
+    const key = m[1];
+    if (key !== '*') {
+      if (typeof cur !== 'object' || Array.isArray(cur)) return undefined;
+      if (!Object.prototype.hasOwnProperty.call(cur, key)) return undefined;
+      cur = cur[key];
+    } else {
+      if (!Array.isArray(cur)) return undefined;
+      const out = [];
+      for (const el of cur) {
+        const sub = resolveConfigPath({ v: el }, 'v' + m[2]);
+        if (sub !== undefined) out.push(sub);
+      }
+      return out;
+    }
+    const idxs = m[2].match(/\d+/g);
+    if (idxs) {
+      for (const i of idxs) {
+        if (!Array.isArray(cur)) return undefined;
+        const n = parseInt(i, 10);
+        if (!Number.isFinite(n) || n < 0 || n >= cur.length) return undefined;
+        cur = cur[n];
+      }
+    }
+  }
+  return cur;
 }
 
 function getProviders() {
@@ -982,7 +1285,8 @@ function writeScenes(scenes) {
 function getLog(n=80) {
   try {
     const all = fs.readFileSync(LOG,'utf8').trim().split('\n');
-    return all.slice(-Math.min(Math.max(parseInt(n)||80, 10), 5000));
+    // 倒序返回：最新的一条排在最前面（看日志的习惯），旧的往下排
+    return all.slice(-Math.min(Math.max(parseInt(n)||80, 10), 5000)).reverse();
   } catch(e) { return []; }
 }
 
@@ -992,8 +1296,17 @@ async function getStatus() {
   const providers = getProviders();
   // Never trigger a CLI call from /api/status — it's the health/overview
   // endpoint and must answer in milliseconds even when the CLI is slow/hung.
-  // Use the cached model list when available; /api/models serves fresh data.
-  const cachedModels = modelsCache && Array.isArray(modelsCache.models) ? modelsCache.models : [];
+  // 1) 优先用缓存的 CLI 结果
+  // 2) 缓存空 → 用 modelPolicy.allow 做 fallback（2026.9+ 静态列表）
+  let cachedModels = modelsCache && Array.isArray(modelsCache.models) ? modelsCache.models : [];
+  if (!cachedModels.length) {
+    const keyed = new Set();
+    if (c.models?.providers) Object.keys(c.models.providers).forEach(k => { if (c.models.providers[k].apiKey) keyed.add(k); });
+    cachedModels = getAllowList(c).map(k => {
+      const provider = String(k).split('/')[0];
+      return { key: k, provider, available: keyed.has(provider), hasKey: keyed.has(provider) };
+    });
+  }
   return {
     version:PACKAGE_VERSION,
     port:PORT,
@@ -1015,17 +1328,17 @@ async function getStatus() {
 
 function doSwitch(changes) {
   return mutate((c) => {
-    const list = c.agents?.list || [];
-    if (!c.agents) c.agents = { defaults: {}, list };
+    if (!c.agents) c.agents = { defaults: {} };
     if (!c.agents.defaults) c.agents.defaults = {};
-    if (!c.agents.defaults.models) c.agents.defaults.models = {};
+    ensureModelPolicy(c);   // 确保 modelPolicy.allow 存在
     const log_entries = [];
     Object.entries(changes||{}).forEach(([id,nm]) => {
-      const e = list.find(a => a.id === id); if (!e) return;
+      const e = entryById(c, id); if (!e) return;
       const old = e.model?.primary || '(inherit)';
       if (!e.model) e.model = {};
       e.model.primary = nm;
-      if (!c.agents.defaults.models[nm]) c.agents.defaults.models[nm] = {};
+      // 把新模型加入 allow list（如果还没有）
+      addModelToAllowList(c, nm);
       log_entries.push(`${id}: ${old} → ${nm}`);
     });
     return log_entries;
@@ -1043,42 +1356,112 @@ async function applyProbeResult(providerId, modelList, baseUrl, apiKey) {
   return mutate((c) => {
     if (!c.models) c.models = { mode: 'merge', providers: {} };
     if (!c.models.providers) c.models.providers = {};
+    // 上游 /v1/models 里可能混着「模式型」条目（例如 "gemini-2.5-flash-thinking-*"），
+    // 那不是可用的模型 id。写进 modelPolicy.allow 会让 openclaw 判定**整个配置非法**
+    // ("invalid model policy ref")，直接拒绝加载配置 —— 必须过滤掉，不能写回。
+    const usable = modelList.filter(m => m && m.id && !/[*?]/.test(m.id));
+    const skippedPatterns = modelList.length - usable.length;
+    const prevProv = c.models.providers[providerId] || {};
     c.models.providers[providerId] = {
+      ...prevProv,                       // 保留 provider 上的其它字段（name / api / authHeader …）
       baseUrl: baseUrl,
-      apiKey: apiKey,
-      api: 'openai-completions',
-      authHeader: true,
-      models: modelList.map(m => ({ id: m.id, name: m.id, input: ['text'], contextWindow: 128000, maxTokens: 8192 })),
+      apiKey: apiKey,                    // 原样写回（可能是 SecretRef 引用，不落明文）
+      api: prevProv.api || 'openai-completions',
+      authHeader: prevProv.authHeader !== undefined ? prevProv.authHeader : true,
+      // 保留每个模型上一轮的附加字段（如 compat.supportsUsageInStreaming）。
+      // 否则每次刷新都会把用户手工加的 compat / reasoning 等配置抹掉。
+      models: usable.map(m => {
+        const prevModel = Array.isArray(prevProv.models) ? prevProv.models.find(x => x && x.id === m.id) : null;
+        return {
+          ...(prevModel || {}),
+          id: m.id,
+          name: m.id,
+          input: prevModel && Array.isArray(prevModel.input) && prevModel.input.length ? prevModel.input : ['text'],
+          contextWindow: prevModel && Number.isFinite(prevModel.contextWindow) ? prevModel.contextWindow : 128000,
+          maxTokens: prevModel && Number.isFinite(prevModel.maxTokens) ? prevModel.maxTokens : 8192,
+        };
+      }),
     };
-    if (!c.agents) c.agents = { defaults: {}, list: [] };
+    if (!c.agents) c.agents = { defaults: {} };
     if (!c.agents.defaults) c.agents.defaults = {};
-    if (!c.agents.defaults.models) c.agents.defaults.models = {};
-    for (const m of modelList) {
+    ensureModelPolicy(c);
+    for (const m of usable) {
       const key = `${providerId}/${m.id}`;
-      if (!c.agents.defaults.models[key]) c.agents.defaults.models[key] = {};
+      addModelToAllowList(c, key);   // 新增到 modelPolicy.allow
     }
-    // Auto-prune stale agents.defaults.models[provider/*] entries: a key is
-    // an orphan if X is no longer in the freshly-probed list AND no agent's
+    // Auto-prune stale modelPolicy.allow entries: a key is an orphan if
+    // X is no longer in the freshly-probed list AND no agent's
     // model.primary uses it. probe() is thus a real-time read.
-    const probedIds = new Set(modelList.map(m => m.id));
-    const keepByAgent = new Set();
-    if (c.agents.list) for (const a of c.agents.list) {
-      const p = a?.model?.primary;
-      if (p && p.startsWith(providerId + '/')) keepByAgent.add(p);
+    const probedIds = new Set(usable.map(m => m.id));
+
+    // 大小写归一：openclaw 的 provider id 匹配是大小写敏感的。历史上 agent 的
+    // model.primary 被写成 '空氧api/xxx'（provider 实际 id 是 '空氧API'），
+    // 于是该 agent 的模型永远解析不到 provider（面板显示「供应商未配置」），
+    // allow 列表也积下一批同前缀的历史残留。刷新时按规范 id 归一引用，
+    // 只在模型确实还在上游时才改写。
+    let fixedRefs = 0;
+    const entries = c.agents && c.agents.entries;
+    if (entries && typeof entries === 'object') {
+      for (const ent of Object.values(entries)) {
+        const pr = ent && ent.model && ent.model.primary;
+        if (typeof pr !== 'string') continue;
+        const slash = pr.indexOf('/');
+        if (slash < 0) continue;
+        const pid = pr.slice(0, slash), mid = pr.slice(slash + 1);
+        if (pid === providerId) continue;
+        if (pid.toLowerCase() !== providerId.toLowerCase()) continue;
+        if (!probedIds.has(mid)) continue;
+        ent.model.primary = providerId + '/' + mid;
+        fixedRefs++;
+      }
     }
-    const prefix = providerId + '/';
-    let removed = 0;
-    for (const key of Object.keys(c.agents.defaults.models)) {
-      if (!key.startsWith(prefix)) continue;
-      if (keepByAgent.has(key)) continue;
-      const id = key.slice(prefix.length);
-      if (!probedIds.has(id)) { delete c.agents.defaults.models[key]; removed++; }
+
+    // 被 agent 实际占用的 key（归一之后重新统计，别把刚归一的引用当成孤儿剪掉）
+    const usedByAgent = new Set();
+    for (const a of entriesAsList(c)) {
+      const pr = a?.model?.primary;
+      if (typeof pr === 'string') usedByAgent.add(pr);
     }
-    return { count: modelList.length, removed };
+
+    const lowerPrefix = providerId.toLowerCase() + '/';
+    let removed = 0, staleRemoved = 0;
+    const allow = c.agents.defaults.modelPolicy.allow;
+
+    // 清掉 allow 列表里非法的通配符 ref（如 "provider/model-*"）——
+    // 这类条目会让 openclaw 判定整个配置非法。
+    let removedInvalid = 0;
+    for (let i = allow.length - 1; i >= 0; i--) {
+      const k = allow[i];
+      if (typeof k !== 'string' || !/[*?]/.test(k)) continue;
+      const parts = k.split('/');
+      const last = parts[parts.length - 1];
+      const ok = last === '*' && parts.length >= 2 && parts.slice(0, -1).every(x => x && !/[*?]/.test(x));
+      if (ok) continue;
+      allow.splice(i, 1);
+      removedInvalid++;
+    }
+    for (let i = allow.length - 1; i >= 0; i--) {
+      const key = allow[i];
+      if (!key.toLowerCase().startsWith(lowerPrefix)) continue;  // 本 provider 的条目（含大小写残留）
+      if (usedByAgent.has(key)) continue;                          // 仍被 agent 引用 → 保留
+      const slash = key.indexOf('/');
+      const pid = key.slice(0, slash);
+      const mid = key.slice(slash + 1);
+      if (pid !== providerId) { allow.splice(i, 1); staleRemoved++; removed++; continue; }  // 大小写残留条目
+      if (!probedIds.has(mid)) { allow.splice(i, 1); removed++; }
+    }
+    return { count: usable.length, removed, staleRemoved, fixedRefs, skippedPatterns, removedInvalid };
   });
 }
 
 async function doProbe(provider,apiKey,baseUrl) {
+  // apiKey 允许为空：此时复用 config 里该 provider 已配置的 key（可能是 SecretRef 引用对象）。
+  let rawKey = apiKey;
+  if(!rawKey) {
+    try { const cfg = read(); rawKey = (cfg && cfg.models && cfg.models.providers && cfg.models.providers[provider]) ? (cfg.models.providers[provider].apiKey || '') : ''; } catch(e){}
+  }
+  const secretKey = resolveApiKey(rawKey);
+  if(!secretKey) return { ok: false, error: `No api key for ${provider}`, code: E.PROBE_FAILED };
   if(!baseUrl) { const cat=CATALOG.find(x=>x.id===provider); baseUrl=cat?cat.baseUrl:`https://api.${provider}.com`; }
   baseUrl = String(baseUrl).replace(/\/+$/,'');   // strip trailing slashes
   if (!baseUrl) return { ok: false, error: `No baseUrl for ${provider}`, code: E.PROBE_FAILED };
@@ -1090,18 +1473,18 @@ async function doProbe(provider,apiKey,baseUrl) {
 
   for(const probeUrl of urls) {
     try {
-      let resp = await fetch(probeUrl,{headers:{'Authorization':'Bearer '+apiKey},signal:AbortSignal.timeout(15000)});
+      let resp = await fetch(probeUrl,{headers:{'Authorization':'Bearer '+secretKey},signal:AbortSignal.timeout(15000)});
       let data;
       if(!resp.ok) {
         // 尝试不带 Bearer 前缀（Anthropic 风格）
-        resp = await fetch(probeUrl,{headers:{'Authorization':apiKey},signal:AbortSignal.timeout(8000)});
+        resp = await fetch(probeUrl,{headers:{'Authorization':secretKey},signal:AbortSignal.timeout(8000)});
         if(!resp.ok) continue; // try next URL
         data = await resp.json();
       } else { data = await resp.json(); }
       const raw = data.data || data;
       if(!Array.isArray(raw)||!raw.length) continue;
       const modelList = raw.map(m => ({ id: m.id }));
-      const r = await applyProbeResult(provider, modelList, baseUrl, apiKey);
+      const r = await applyProbeResult(provider, modelList, baseUrl, rawKey);
       if (r.removed) log(`Probe ${provider}: pruned ${r.removed} orphan(s) from agents.defaults.models`);
       log(`Probe ${provider}: ${r.count} models via ${probeUrl}`);
       return { ok: true, count: r.count, models: modelList.map(m => ({ id: m.id, key: `${provider}/${m.id}` })) };
@@ -1111,7 +1494,7 @@ async function doProbe(provider,apiKey,baseUrl) {
 }
 
 // ---- Orphan pruning (global, no API call needed) ----
-// Removes keys from agents.defaults.models that are:
+// Removes keys from agents.defaults.modelPolicy.allow that are:
 //   - NOT in use by any agent's model.primary
 //   - AND NOT present in any models.providers[*].models[*].id
 // In-use keys (e.g. minimax/MiniMax-M3) are kept even if no provider has them
@@ -1120,7 +1503,8 @@ async function doPruneOrphans({dryRun=false}={}) {
   // For both dry-run and real, the read+analyze is the same. The actual
   // delete + write is the part that goes through mutate() for safety.
   const scan = read();
-  if (!scan.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys: [], dryRun, knownCount: 0, inUseCount: 0 };
+  if (!scan.agents?.defaults?.modelPolicy?.allow && !scan.agents?.defaults?.models)
+    return { ok: true, removed: 0, removedKeys: [], dryRun, knownCount: 0, inUseCount: 0 };
 
   const known = new Set();
   if (scan.models?.providers) {
@@ -1131,12 +1515,18 @@ async function doPruneOrphans({dryRun=false}={}) {
     }
   }
   const inUse = new Set();
-  if (scan.agents?.list) for (const a of scan.agents.list) {
+  for (const a of entriesAsList(scan)) {
     if (a?.model?.primary) inUse.add(a.model.primary);
   }
 
+  // Build the universe of allow-list keys (from modelPolicy.allow; fallback
+  // to legacy models dict keys if allow is missing).
+  const allow = (scan.agents?.defaults?.modelPolicy && Array.isArray(scan.agents.defaults.modelPolicy.allow))
+    ? scan.agents.defaults.modelPolicy.allow
+    : Object.keys(scan.agents?.defaults?.models || {});
+
   const removedKeys = [];
-  for (const key of Object.keys(scan.agents.defaults.models)) {
+  for (const key of allow) {
     if (inUse.has(key)) continue;
     if (known.has(key)) continue;
     removedKeys.push(key);
@@ -1146,8 +1536,14 @@ async function doPruneOrphans({dryRun=false}={}) {
   }
   // Real delete — go through mutate() for write serialization
   return mutate((c) => {
-    if (!c.agents?.defaults?.models) return { ok: true, removed: 0, removedKeys };
-    for (const k of removedKeys) delete c.agents.defaults.models[k];
+    const removedSet = new Set(removedKeys);
+    if (c.agents?.defaults?.modelPolicy && Array.isArray(c.agents.defaults.modelPolicy.allow)) {
+      c.agents.defaults.modelPolicy.allow = c.agents.defaults.modelPolicy.allow.filter(k => !removedSet.has(k));
+    }
+    // 兼容清老结构
+    if (c.agents?.defaults?.models) {
+      for (const k of removedKeys) delete c.agents.defaults.models[k];
+    }
     return { ok: true, removed: removedKeys.length, removedKeys, dryRun: false, knownCount: known.size, inUseCount: inUse.size };
   }).then(r => {
     if (r.ok && r.removed) log(`Prune orphans: removed ${r.removed} (${r.removedKeys.join(', ')})`);
@@ -1186,7 +1582,7 @@ async function doDeleteProvider(id, force=false) {
   const result = await mutate((c) => {
     if (!c.models?.providers?.[id]) return { ok: false, error: `Provider "${id}" not found`, code: E.NOT_FOUND };
     const liveDeps = new Set();
-    if (c.agents?.list) for (const a of c.agents.list) {
+    for (const a of entriesAsList(c)) {
       const p = a?.model?.primary;
       if (p && p.startsWith(id + '/')) liveDeps.add(p);
     }
@@ -1195,10 +1591,18 @@ async function doDeleteProvider(id, force=false) {
     }
     delete c.models.providers[id];
     let orphansCleaned = 0;
+    if (c.agents?.defaults?.modelPolicy && Array.isArray(c.agents.defaults.modelPolicy.allow)) {
+      const prefix = id + '/';
+      c.agents.defaults.modelPolicy.allow = c.agents.defaults.modelPolicy.allow.filter(k => {
+        if (k.startsWith(prefix)) { orphansCleaned++; return false; }
+        return true;
+      });
+    }
+    // 兼容老结构
     if (c.agents?.defaults?.models) {
       const prefix = id + '/';
       for (const key of Object.keys(c.agents.defaults.models)) {
-        if (key.startsWith(prefix)) { delete c.agents.defaults.models[key]; orphansCleaned++; }
+        if (key.startsWith(prefix)) { delete c.agents.defaults.models[key]; }
       }
     }
     return { ok: true, deleted: id, orphansCleaned, liveDeps: [...liveDeps] };
@@ -1207,13 +1611,88 @@ async function doDeleteProvider(id, force=false) {
   return result;
 }
 
+// ---- SecretRef 解析（openclaw secret store） ----
+// openclaw 把 apiKey / appSecret 等明文迁进 secret store 后，openclaw.json 里存的是
+// {source:'store', provider:'team', id:'NAME'} 引用对象。之前这里直接拿 p.apiKey 拼
+// 'Bearer ' + p.apiKey → 实际发出 "Bearer [object Object]" → 全部 401，
+// 表现为「全部刷新」对每个供应商都失败、模型数永远更新不了。
+// 注意：解析只用于「发请求」；写回 openclaw.json 时一律写原始引用对象，不落明文。
+const SECRET_DB = path.join(OPENCLAW_HOME, '.openclaw', 'state', 'openclaw.sqlite');
+let _secretCache = { at: 0, map: new Map() };
+
+function loadSecretStore() {
+  const now = Date.now();
+  if (_secretCache.map.size && now - _secretCache.at < 15000) return _secretCache.map;
+  const map = new Map();
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(SECRET_DB, { readOnly: true });
+    for (const r of db.prepare('SELECT name, value FROM secret_store_entries').all()) {
+      map.set(String(r.name), String(r.value));
+    }
+    db.close();
+  } catch (e) {
+    log('Secret store read failed: ' + (e && e.message ? e.message : e));
+    return _secretCache.map;            // 读失败时用旧缓存兜底
+  }
+  _secretCache = { at: now, map };
+  return map;
+}
+
+// 把 config 里的 apiKey 字段（明文字符串 或 SecretRef 对象）解析成真正可用的 key。
+// 支持三种来源：
+//   1) 明文字符串
+//   2) {source:'env', id:'MINIMAX_API_KEY'}  → 读进程环境变量
+//   3) {source:'store', id:'XXX'}           → 读 openclaw secret store
+function resolveApiKey(v) {
+  if (v === null || v === undefined || v === '') return '';
+  if (typeof v === 'string') return v;
+  if (typeof v === 'object') {
+    // env 引用：key 放在环境变量里，config / sqlite 都不落明文
+    if (v.source === 'env') {
+      const id = String(v.id || '');
+      return id ? String(process.env[id] || '') : '';
+    }
+    const name = String(v.id || v.name || v.key || '');
+    if (!name) return '';
+    const store = loadSecretStore();
+    if (store.has(name)) return store.get(name);
+    for (const [k, val] of store) {
+      if (k.toLowerCase() === name.toLowerCase()) return val;
+    }
+    return '';
+  }
+  return String(v);
+}
+
+// store 里存的是 "secret://xxx" 引用串而不是真值时（例如 switcher 早期迁移把
+// 引用本身当值写进去了），绝不能把它当 Bearer token 发出去 —— 那样必然 401。
+function isSecretPointer(v) {
+  return typeof v === 'string' && v.startsWith('secret://');
+}
+
 // Single-URL fast refresh for one provider. Used by doRefreshAllProviders to
 // keep the loop bounded — doProbe's multi-URL fallback + 15s internal fetch
 // timeout would make 5 providers take 5+ minutes if any one is unreachable.
 // Trades breadth (no URL fallback) for speed: if the configured baseUrl is
 // wrong, the provider reports failure; user can fix via the edit button.
-async function refreshOneProviderFast(id, p, perAttemptMs = 3000) {
-  if (!p.apiKey) return { provider: id, ok: false, error: 'no api key', skipped: true };
+async function refreshOneProviderFast(id, p, perAttemptMs = 8000, opts = {}) {
+  // config 里存的可能是明文，也可能是 SecretRef 引用对象（openclaw secrets store）。
+  // 请求用解析后的真 key；写回配置时仍用原始引用对象 —— 绝不把明文写回 openclaw.json。
+  const rawKey = p.apiKey;
+  if (!rawKey) return { provider: id, ok: false, error: 'no api key', skipped: true };
+  const secretKey = resolveApiKey(rawKey);
+  const danglingRef = isSecretPointer(secretKey);
+  if ((!secretKey || danglingRef) && !opts.noAuth) {
+    // 没有可用密钥（或密钥引用已失效）时，先试「不带 Authorization」——
+    // 本地无鉴权服务（LM Studio）照样能通；真要鉴权的服务会返回 401，错误信息更准。
+    const note = danglingRef
+      ? '密钥引用失效（store 里存的是 secret:// 指针，不是真值）'
+      : ((typeof rawKey === 'object' && rawKey.source === 'env')
+          ? ('环境变量 ' + (rawKey.id || '?') + ' 未设置')
+          : '未配置可用密钥');
+    return refreshOneProviderFast(id, p, perAttemptMs, { noAuth: true, note });
+  }
   const baseUrl = (p.baseUrl || '').replace(/\/+$/, '');
   if (!baseUrl) return { provider: id, ok: false, error: 'no baseUrl' };
 
@@ -1223,19 +1702,34 @@ async function refreshOneProviderFast(id, p, perAttemptMs = 3000) {
   const t0 = Date.now();
   try {
     const resp = await fetch(url, {
-      headers: { 'Authorization': 'Bearer ' + p.apiKey },
+      headers: opts.noAuth ? {} : { 'Authorization': 'Bearer ' + secretKey },
       signal: AbortSignal.timeout(perAttemptMs),
     });
-    if (!resp.ok) return { provider: id, ok: false, error: `HTTP ${resp.status}`, elapsedMs: Date.now() - t0 };
+    if (!resp.ok) return { provider: id, ok: false, error: `HTTP ${resp.status}${opts.note ? '（' + opts.note + '）' : ''}`, elapsedMs: Date.now() - t0 };
     const data = await resp.json();
     const raw = data.data || data;
     if (!Array.isArray(raw) || !raw.length) return { provider: id, ok: false, error: 'empty model list', elapsedMs: Date.now() - t0 };
 
+    // 与「上次注册的模型」对比 —— 这就是「实际模型」的变更明细（新增 / 移除）
+    const prevIds = new Set((p.models || []).map(m => (typeof m === 'string' ? m : m && m.id)).filter(Boolean));
+    const nowIds = raw.map(m => m && m.id).filter(Boolean);
+    const skippedPatterns = nowIds.filter(x => /[*?]/.test(x)).length;
+    const usableIds = nowIds.filter(x => !/[*?]/.test(x));
+    const nowSet = new Set(nowIds);
+    const addedIds = usableIds.filter(x => !prevIds.has(x));
+    const droppedIds = [...prevIds].filter(x => !nowSet.has(x));
+
     // Use the shared apply path so refresh-all and single-probe behave identically.
-    const modelList = raw.map(m => ({ id: m.id }));
-    const r = await applyProbeResult(id, modelList, p.baseUrl, p.apiKey);
-    log(`Refresh ${id}: ${r.count} models (pruned ${r.removed})`);
-    return { provider: id, ok: true, count: r.count, removed: r.removed, elapsedMs: Date.now() - t0 };
+    // 写回原始引用对象（SecretRef），不落明文。
+    const modelList = usableIds.map(id => ({ id }));
+    const r = await applyProbeResult(id, modelList, p.baseUrl, rawKey);
+    log(`Refresh ${id}: ${r.count} models (+${addedIds.length}/-${droppedIds.length}, pruned ${r.removed})`);
+    return { provider: id, ok: true, count: r.count, removed: r.removed,
+             fixedRefs: r.fixedRefs || 0, staleRemoved: r.staleRemoved || 0,
+             added: addedIds.length, dropped: droppedIds.length, skippedPatterns,
+             addedIds: addedIds.slice(0, 12), droppedIds: droppedIds.slice(0, 12),
+             models: usableIds.slice(0, 60), totalModels: usableIds.length,
+             elapsedMs: Date.now() - t0 };
   } catch (e) {
     return { provider: id, ok: false, error: e.message, elapsedMs: Date.now() - t0 };
   }
@@ -1246,7 +1740,7 @@ async function refreshOneProviderFast(id, p, perAttemptMs = 3000) {
 // timeout, 5 providers complete in ~15s worst case (vs 5+ min via doProbe).
 // 并行执行所有 provider 的刷新（各自独立失败不阻塞其他），
 // 并发上限 6，避免一次性打爆网络/限流。
-async function doRefreshAllProviders({perAttemptMs = 3000} = {}) {
+async function doRefreshAllProviders({perAttemptMs = 8000} = {}) {
   const c = read();
   if (!c.models?.providers) return { ok: true, total: 0, succeeded: 0, failed: 0, results: [] };
   const providerIds = Object.keys(c.models.providers);
@@ -1268,78 +1762,37 @@ async function doRefreshAllProviders({perAttemptMs = 3000} = {}) {
 
 // ---- HTTP server ----
 
-// ---- Optional bearer-token auth (#13) ----
-// If SWITCHER_TOKEN is set, all endpoints (except /api/auth/*) require it.
-// The token can be any non-empty string; client sends `Authorization: Bearer <token>`.
-// /api/auth/status tells the client whether auth is required; /api/auth/login lets
-// the client verify a token before saving it client-side.
-const AUTH_TOKEN = (process.env.SWITCHER_TOKEN || '').trim();
-function authEnabled() { return !!AUTH_TOKEN; }
-function authOk(req) {
-  if (!authEnabled()) return true;                 // open mode (dev / local-only)
-  if (req.url === '/api/auth/status') return true;  // meta endpoint always open
-  if (req.url === '/api/auth/login') return true;   // token verification always open
-  // C5: 静态前端资源必须放行——浏览器加载页面不会带 Authorization header，
-  // 否则启用 token 认证后整个 UI 都无法加载（API 仍全部受保护）
-  const urlPath = String(req.url||'').split('?')[0];
-  if (urlPath === '/' || urlPath === '/index.html' || urlPath === '/vue.global.prod.js') return true;
-  const h = req.headers['authorization'] || '';
-  if (h === 'Bearer ' + AUTH_TOKEN) return true;
-  return false;
-}
-function authForbidden(res) {
-  return err(res, 'AUTH_REQUIRED', 'Authentication required (Authorization: Bearer <token>)', 401);
-}
+// 启动时恢复上一次更新的日志（switcher 重启后仍能回看）
+try { ocUpdateLoadPersisted(); } catch(e){}
 
+// ---- HTTP server ----
 const srv = http.createServer(async (req,res)=>{
   const {method}=req; const u=new URL(req.url,`http://localhost:${PORT}`);
   const p=u.pathname; const q=Object.fromEntries(u.searchParams);
 
-  // CORS preflight FIRST — it never carries an Authorization header, so
-  // gating it behind auth would break every cross-origin client.
+  // CORS preflight
   if(method==='OPTIONS') {
     res.writeHead(204,{
       'Access-Control-Allow-Origin':'*',
       'Access-Control-Allow-Methods':'GET,POST,OPTIONS',
-      'Access-Control-Allow-Headers':'Content-Type, Authorization',
+      'Access-Control-Allow-Headers':'Content-Type',
       'Access-Control-Max-Age':'86400',
     });
     return res.end();
   }
 
-  // Auth gate (after preflight; 401s carry the CORS headers via err/json)
-  if (!authOk(req)) return authForbidden(res);
-
   try {
     // GET
-    if(method==='GET'&&p==='/api/auth/status') return json(res, {ok: true, required: authEnabled()});
-    if(method==='POST'&&p==='/api/auth/login') {
-      // Body: {token: '...'} - returns 200 if matches, 401 if not.
-      // Allows client to verify before saving to localStorage.
-      return new Promise(resolve => {
-        let raw = '';
-        req.on('data', c => raw += c);
-        req.on('end', () => {
-          let b = {};
-          try { b = raw ? JSON.parse(raw) : {}; } catch(e) { b = {}; }
-          if (!authEnabled()) { resolve(json(res, {ok: true, required: false})); return; }
-          if (typeof b.token === 'string' && b.token === AUTH_TOKEN) {
-            resolve(json(res, {ok: true, required: true, valid: true}));
-          } else {
-            resolve(err(res, 'AUTH_INVALID', 'Invalid token', 401, {valid: false}));
-          }
-        });
-      });
-    }
     if(method==='GET'&&p==='/api/status') return json(res,await getStatus());
     if(method==='GET'&&p==='/api/feishu/diagnostics') {
       if (cliMissing()) return json(res,{diagnostics:{},raw:'',error:'CLI not configured'},503);
       // Cache 15s: the frontend polls this on every refresh and `channels
       // status` can take seconds — a cache keeps page loads snappy.
       const nowTs = Date.now();
-      if (diagCache && nowTs - diagCacheAt < 15000) return json(res, diagCache);
+      // TTL 必须大于前端轮询间隔（30s），否则每轮都 spawn 一次 channels status
+      if (diagCache && nowTs - diagCacheAt < 90000) return json(res, diagCache);
       try{
-        const sp=await runCli([CLI,'channels','status'],10000);
+        const sp=await runCli([CLI,'channels','status'],30000);
         const lines=(sp.out||'').split('\n').filter(l=>l.includes('Feishu'));
         const diag={};
         lines.forEach(l=>{
@@ -1419,7 +1872,7 @@ const srv = http.createServer(async (req,res)=>{
           try {
             const c = require('child_process').spawn('winget',['install','-e','--id','OpenJS.NodeJS.LTS','--accept-source-agreements','--accept-package-agreements','--silent'],{windowsHide:true,shell:false});
             let out='',err='',done=false;
-            const timer=setTimeout(()=>{ if(!done){done=true;try{c.kill();}catch{} resolve({out,err,timedOut:true});} },600000);
+            const timer=setTimeout(()=>{ if(!done){done=true;killTree(c.pid); resolve({out,err,timedOut:true});} },600000);
             c.stdout.on('data',d=>{if(!done){out+=d;}});
             c.stderr.on('data',d=>{if(!done)err+=d;});
             c.on('error',e=>{if(!done){done=true;clearTimeout(timer);resolve({out,err,error:e.message});}});
@@ -1438,20 +1891,37 @@ const srv = http.createServer(async (req,res)=>{
       installRunning=true;
       try {
         const want=String(b.version||'').trim();
-        if(want && !validVersion(want)) return json(res,{ok:false,error:'版本号格式非法'},400);
+        // 立刻进入 running 态：版本校验要跑 npm view（最慢 60~90s），
+        // 不先 reset 的话前端这几十秒只能看到上一轮的旧日志，像卡死了一样
+        ocUpdateReset(want||'latest');
+        ocUpdatePush('$ npm install -g openclaw' + (want ? '@'+want : ''));
+        if(want && !validVersion(want)) { ocUpdateFinish(false,'版本号格式非法'); return json(res,{ok:false,error:'版本号格式非法'},400); }
         if(want){
           // 必须存在于 npm 历史版本列表（防任意包/路径注入）
+          ocUpdatePush('· 校验版本…（npm view openclaw versions，可能需要 1 分钟）');
           const info=await queryOpenclawVersions(true);
-          if(!(info.versions||[]).includes(want) && want!==info.latest)
-            return json(res,{ok:false,error:`版本 ${want} 不在 npm 历史版本列表中`},400);
+          if(!(info.versions||[]).includes(want) && want!==info.latest){ ocUpdateFinish(false,'版本不在 npm 历史版本列表中'); return json(res,{ok:false,error:`版本 ${want} 不在 npm 历史版本列表中`},400); }
         }
         const args=['install','-g', want ? `${OPENCLAW_PKG}@${want}` : OPENCLAW_PKG];
         log(`OpenClaw update start: ${want||'latest'}`);
-        const r=await runNpm(args, 240000);   // npm install -g 最多 4 分钟
+        const r=await runNpm(args, 240000, (chunk)=>ocUpdatePush(chunk));   // npm install -g 最多 4 分钟
         const ok = !r.error && !r.timedOut && r.code===0;
+        const errMsg=r.error||(r.timedOut?'npm 超时':null);
+        ocUpdateFinish(ok, errMsg);
         log(`OpenClaw update ${ok?'OK':'FAIL'} ${want||'latest'} (code=${r.code})`);
-        return json(res,{ok, code:r.code, error:r.error||(r.timedOut?'npm 超时':null), output:(r.out+r.err).slice(-6000)});
-      } finally { installRunning=false; }
+        return json(res,{ok, code:r.code, error:errMsg, output:(r.out+r.err).slice(-6000)});
+      } catch(e){ ocUpdateFinish(false, e.message); throw e; }
+      finally { installRunning=false; }
+    }
+    // 更新实时进度（前端轮询；npm 输出边跑边收）
+    if(method==='GET'&&p==='/api/openclaw/update/progress') {
+      const st=ocUpdateProgress;
+      const elapsed = st.startedAt ? ((st.finishedAt || Date.now()) - st.startedAt) : 0;
+      return json(res,{
+        running:st.running, version:st.version, startedAt:st.startedAt, finishedAt:st.finishedAt,
+        elapsedMs:elapsed, ok:st.ok, error:st.error,
+        total:st.lines.length, lines:st.lines.slice(-250)
+      });
     }
     // 新建 Agent 的模板列表：现存 Agent（真实 agent，来自 agents.list，而非
     // workspace 目录——那里混着 data/media/temp 等非 agent 文件夹）
@@ -1460,7 +1930,7 @@ const srv = http.createServer(async (req,res)=>{
       const existing=[], recommended=[];
       try {
         let c; try { c=read(); } catch(e) { c={}; }
-        const ids = new Set((c.agents?.list||[]).map(a=>a.id));
+        const ids = new Set(entriesAsList(c).map(a=>a.id));
         if (ids.size) {
           for (const id of ids) existing.push(id);
         } else {
@@ -1509,8 +1979,14 @@ const srv = http.createServer(async (req,res)=>{
     if(method==='GET'&&p==='/api/providers/available') {
       if (cliMissing()) return json(res,{ok:false,error:'CLI not configured',hint:'set OPENCLAW_CLI env var'},503);
       const nowTs=Date.now();
-      if (provAvailCache && nowTs - provAvailCacheAt < 30000) return json(res, provAvailCache);
-      const cliRes=await runCli([CLI,'capability','model','providers','--json'], 20000);
+      // TTL 必须大于前端轮询间隔（30s），否则缓存永远不命中 → 每轮都 spawn CLI
+      if (provAvailCache && nowTs - provAvailCacheAt < 120000) return json(res, provAvailCache);
+      // 2026.9+ 多 agent 时该命令也要求 --agent
+      let defaultAgent = 'main';
+      try { defaultAgent = resolveDefaultAgentId(read()) || 'main'; } catch {}
+      // 该 CLI 实测要 94 秒（474 模型 × 10 个 agent 的 provider 能力矩阵），
+      // 原来的 20s 超时必然超时 → 接口恒返回 500。给足 150s。
+      const cliRes=await runCli([CLI,'capability','model','providers','--json','--agent',defaultAgent], 150000);
       try {
         const arr=JSON.parse(cliRes.out);
         if (Array.isArray(arr)) {
@@ -1532,6 +2008,42 @@ const srv = http.createServer(async (req,res)=>{
     }
     if(method==='GET'&&p==='/api/providers') return json(res,getProviders());
     if(method==='GET'&&p==='/api/providers/catalog') return json(res,getCatalogWithModels());
+    // Gateway 状态探针：3s timeout。返回 up/down + pid。
+    if(method==='GET'&&p==='/api/gateway/status') {
+      return new Promise(resolve => {
+        const http = require('http');
+        // 防止双重响应:error/timeout/success 三个路径只能有一个真正写头。
+        // 之前这里在 timeout 路径里 req.destroy() 会异步触发 'error',
+        // 导致 json() 被调两次 → ERR_HTTP_HEADERS_SENT 持续刷屏。
+        let responded = false;
+        const reply = (data) => {
+          if (responded) return;
+          responded = true;
+          try { resolve(json(res, data)); }
+          catch (e) { try { res.end(); } catch {} }
+        };
+        const req = http.get('http://127.0.0.1:18888/health', { timeout: 3000 }, r => {
+          let body = ''; r.on('data', d => body += d); r.on('end', () => {
+            // pid 探测：gateway 启动时把状态写进 tmp/openclaw/gateway.state.lock（含 pid），
+            // 直接读文件即可。原来的 spawnSync powershell 每个探针要 700~900ms，
+            // 而这个接口是前端每 10 秒打一次。
+            let pid = null;
+            try {
+              const lk = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw', 'gateway.state.lock');
+              const j = JSON.parse(fs.readFileSync(lk,'utf8'));
+              const p = j && Number.isFinite(j.pid) ? j.pid : null;
+              // process.kill(pid,0) 只探测存活、不发信号
+              if (p) { try { process.kill(p, 0); pid = p; } catch(e){} }
+            } catch (e) {}
+            reply({ up: r.statusCode === 200, pid, status: r.statusCode, body: body.slice(0, 80) });
+          });
+        });
+        req.on('error', () => reply({ up: false, pid: null }));
+        req.on('timeout', () => { req.destroy(); reply({ up: false, pid: null, error: 'timeout' }); });
+        // 客户端断开,取消 gateway 请求,不再尝试写响应
+        res.on('close', () => { req.destroy(); responded = true; });
+      });
+    }
     if(method==='GET'&&p==='/api/backups') return json(res,getBackups(q.all==='1'||q.all==='true'));
     if(method==='GET'&&p==='/api/scenes') {
       const r=readScenes();
@@ -1585,6 +2097,332 @@ const srv = http.createServer(async (req,res)=>{
     // GET prune is always dryRun (safe for browser)
     if(method==='GET'&&p==='/api/agents/defaults/models/prune') return json(res,await doPruneOrphans({dryRun:true}));
 
+    // ============== 新增功能（CLI 转发层） ==============
+    // 共用辅助：解析默认 agent id（多 agent 模式必须传 --agent）
+    const _defaultAgentId = () => {
+      try { return resolveDefaultAgentId(read()) || 'main'; } catch { return 'main'; }
+    };
+
+    // -------- 安全审计 --------
+    if(method==='GET' && p==='/api/security/audit') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'security','audit','--json'], 45000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500),err:r.err.slice(0,300)}); }
+    }
+    // -------- 安全审计 (managed) — stop gateway → audit → start gateway --------
+    // 原因: openclaw security audit --json 实际会 ensure schema 最新,需要写 sqlite,
+    //       跟 gateway 持有的 state 锁冲突,直接调会报
+    //       "OpenClaw refused shared state schema mutation … another Gateway owns that state directory"。
+    //       managed 走 stop → audit → start 自动避开,完整流程 ~2 分钟(778 模型预热)。
+    // Body: { waitMs?: 120000 } — gateway 启动超时(默认 120s, 上限 180s)
+    if(method==='POST' && p==='/api/security/audit-managed') {
+      const t0 = Date.now();
+      const waitMs = Math.max(2000, Math.min(parseInt(b?.waitMs)||120000, 180000));
+      try { log(`Security audit-managed: requested (waitMs=${waitMs})`); } catch (_) {}
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+
+      // Step 0: 探测 gateway 当前是否在跑(1s timeout)
+      let gatewayWasUp = false;
+      try {
+        const http = require('http');
+        gatewayWasUp = await new Promise(res => {
+          const req = http.get('http://127.0.0.1:18888/health', { timeout: 1000 }, r => { res(r.statusCode === 200); r.resume(); });
+          req.on('error', () => res(false));
+          req.on('timeout', () => { req.destroy(); res(false); });
+        });
+      } catch (_) {}
+
+      // Step 1: 如果 gateway 在跑,杀掉 + 清 lock
+      let killed = 0, locksCleaned = 0, killErr = '';
+      if (gatewayWasUp) {
+        try { log(`Security audit-managed: stopping gateway`); } catch (_) {}
+        const findKill = await runPowerShell(`
+          $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+          $gw = @($procs | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $ids = $gw | ForEach-Object { $_.ProcessId }
+          $gw | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
+          $r = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $r | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 1
+          'killed=' + $ids.Count
+        `);
+        if (findKill?.timedOut) killErr = 'kill-script-timeout';
+        else if (findKill?.error) killErr = `kill-err: ${findKill.error}`;
+        const km = /killed=(\d+)/.exec(findKill?.out || ''); if (km) killed = parseInt(km[1]);
+        const lockDir = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw');
+        try {
+          for (const f of fs.readdirSync(lockDir)) {
+            if (f.endsWith('.lock')) {
+              try { spawnSync('cmd.exe', ['/d','/c','mavis-trash',path.join(lockDir,f)], { windowsHide: true, stdio:'ignore' });
+                locksCleaned++;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        // 等 1s 让 lock / fd 释放
+        await new Promise(r => setTimeout(r, 1000));
+      }
+
+      // Step 2: 跑 audit
+      let auditRaw = null, auditErr = null, auditOk = false;
+      try {
+        const r = await runCli([CLI,'security','audit','--json'], 45000);
+        auditRaw = r.out;
+        auditErr = r.err;
+        try { auditOk = !!JSON.parse(r.out); } catch (_) { auditOk = false; }
+      } catch (e) { auditErr = e.message; }
+      try { log(`Security audit-managed: audit done (ok=${auditOk})`); } catch (_) {}
+
+      // Step 3: 如果之前 gateway 在跑,启回来
+      let restarted = false, healthy = false, pid = null, startErr = '';
+      if (gatewayWasUp) {
+        try { log(`Security audit-managed: starting gateway`); } catch (_) {}
+        const startRes = await runPowerShell(`
+          Stop-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+          Start-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          if ($?) { 'started' } else { 'start-failed' }
+        `);
+        restarted = /started/.test(startRes?.out || '');
+        if (!restarted) startErr = (startRes?.out || '') + (startRes?.err || '');
+        if (restarted) {
+          const deadline = Date.now() + waitMs;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 1500));
+            try {
+              const p = spawnSync('powershell',['-NoProfile','-Command',
+                "$g = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($g) { 'pid=' + $g }"
+              ], { windowsHide: true, encoding:'utf8' });
+              const m = (p.stdout||'').match(/pid=(\d+)/);
+              if (m) pid = parseInt(m[1]);
+            } catch (_) {}
+            try {
+              const http = require('http');
+              const ok = await new Promise(res => {
+                const req = http.get('http://127.0.0.1:18888/health', { timeout: 2000 }, r => { res(r.statusCode === 200); r.resume(); });
+                req.on('error', () => res(false));
+                req.on('timeout', () => { req.destroy(); res(false); });
+              });
+              if (ok) { healthy = true; break; }
+            } catch {}
+          }
+        }
+      }
+
+      const elapsedMs = Date.now() - t0;
+      try { log(`Security audit-managed: gatewayWasUp=${gatewayWasUp} killed=${killed} restarted=${restarted} healthy=${healthy} pid=${pid} elapsedMs=${elapsedMs}`); } catch (_) {}
+
+      let auditJson = null;
+      try { auditJson = JSON.parse(auditRaw || 'null'); } catch (_) {}
+      return json(res, {
+        ok: auditOk,
+        audit: auditJson,
+        auditRawPreview: (auditRaw || '').slice(0, 500),
+        auditErr: (auditErr || '').slice(0, 300),
+        gatewayWasUp,
+        killed, locksCleaned, killErr,
+        restarted, healthy, pid, startErr,
+        elapsedMs,
+      }, auditOk ? 200 : 500);
+    }
+
+    // -------- Doctor --------
+    if(method==='GET' && p==='/api/doctor') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'doctor','--json'], 300000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',timedOut:!!r.timedOut,raw:r.out.slice(0,500),err:r.err.slice(0,300)}); }
+    }
+
+    // -------- Cron 列表 --------
+    if(method==='GET' && p==='/api/cron/list') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'cron','list','--json','--agent',_defaultAgentId()], 20000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Plugins 列表 --------
+    if(method==='GET' && p==='/api/plugins/list') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'plugins','list','--json'], 30000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- MCP 列表 --------
+    if(method==='GET' && p==='/api/mcp/list') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'mcp','list','--json'], 15000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Skills 列表（按 agent） --------
+    if(method==='GET' && (p==='/api/skills/list' || p.startsWith('/api/skills/list?agent='))) {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const agentId = q.agent || _defaultAgentId();
+      const r = await runCli([CLI,'skills','list','--json','--agent',agentId], 20000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Hooks 列表（按 agent） --------
+    if(method==='GET' && p.startsWith('/api/hooks/list')) {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const agentId = q.agent || _defaultAgentId();
+      const r = await runCli([CLI,'hooks','list','--json','--agent',agentId], 15000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Sessions 列表（all-agents） --------
+    if(method==='GET' && p==='/api/sessions/list') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'sessions','list','--json','--all-agents'], 30000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Memory 搜索（按 agent）— 文本输出，转成结构化 --------
+    if(method==='GET' && p.startsWith('/api/memory/search')) {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const query = q.q || '';
+      const agentId = q.agent || _defaultAgentId();
+      const limit = Math.max(1, Math.min(parseInt(q.limit)||10, 50));
+      if (!query) return json(res,{ok:false,error:'query required (use ?q=...)'},400);
+      // CLI 用 --max-results 不是 --limit
+      const r = await runCli([CLI,'memory','search',query,'--agent',agentId,'--max-results',String(limit)], 30000);
+      // 解析文本输出为结构化结果
+      // 格式示例： "0.442 memory/2026-08-09.md:78-97" + 缩进行
+      const lines = (r.out || '').split(/\r?\n/);
+      const hits = [];
+      let cur = null;
+      const flush = () => { if (cur) { cur.preview = cur.preview.trim(); hits.push(cur); cur = null; } };
+      for (const line of lines) {
+        const m = line.match(/^(\d+\.\d+)\s+(\S+?):(\d+)(?:-(\d+))?\s*$/);
+        if (m) {
+          flush();
+          cur = { score: parseFloat(m[1]), file: m[2], startLine: parseInt(m[3]), endLine: m[4]?parseInt(m[4]):null, preview: line };
+        } else if (cur && line.trim()) {
+          cur.preview += '\n' + line;
+        }
+      }
+      flush();
+      return json(res, { ok: true, query, agentId, hits, raw: r.out.slice(0, 8000) });
+    }
+
+    // -------- Sandbox 列表 + explain --------
+    if(method==='GET' && p==='/api/sandbox/list') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'sandbox','list','--json'], 15000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+    if(method==='GET' && p==='/api/sandbox/explain') {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const r = await runCli([CLI,'sandbox','explain','--json','--agent',q.agent||_defaultAgentId()], 15000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+    }
+
+    // -------- Config diff（当前 openclaw.json vs 备份） --------
+    if(method==='GET' && p==='/api/config/diff') {
+      const bakPath = q.path;
+      if (!bakPath) return json(res,{ok:false,error:'path required (use ?path=...)'},400);
+      // 校验 bakPath 必须在 BACKUP_DIR
+      const resolved = path.resolve(bakPath);
+      if (!resolved.startsWith(path.resolve(BACKUP_DIR)+path.sep)) {
+        return json(res,{ok:false,error:'path must be inside backup dir'},403);
+      }
+      if (!fs.existsSync(resolved)) return json(res,{ok:false,error:'backup not found'},404);
+      try {
+        const cur = read();
+        const old = JSON.parse(fs.readFileSync(resolved, 'utf8'));
+        const diff = computeJsonDiff(old, cur, '');
+        return json(res, { ok: true, from: path.basename(resolved), to: 'current', changes: diff });
+      } catch (e) {
+        return json(res,{ok:false,error:e.message},500);
+      }
+    }
+
+    // -------- Generic config get (读任意 path 的当前值) --------
+    if(method==='GET' && p.startsWith('/api/config/get')) {
+      if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+      const path = q.path;
+      if (!path) return json(res,{ok:false,error:'path required (use ?path=...)'},400);
+      if (typeof path !== 'string' || /[^a-zA-Z0-9._\[\]$\-]/.test(path)) {
+        return json(res,{ok:false,error:'path must match [a-zA-Z0-9._[]$-]'},400);
+      }
+      // 先本地解析（毫秒级）。原来每次都 spawn 一次 `config get --json`，实测 4.6s。
+      // 本地解析不到（路径含通配等）再回落 CLI，保证语义不丢。
+      try {
+        const local = resolveConfigPath(read(), path);
+        if (local !== undefined) return json(res, local);
+      } catch(e) {}
+      const r = await runCli([CLI,'config','get','--json',path], 15000);
+      try { return json(res, JSON.parse(r.out)); }
+      catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500),err:r.err.slice(0,200)}); }
+    }
+
+    // -------- Secrets scan（找出 openclaw.json 里所有明文 secret） --------
+    if(method==='GET' && p==='/api/secrets/scan') {
+      const c = read();
+      const findings = [];
+      const refs = [];   // 已迁移到 secret:// 的引用（不算明文，但报告一下）
+      const walk = (obj, p) => {
+        if (!obj || typeof obj !== 'object') return;
+        if (Array.isArray(obj)) { obj.forEach((v,i) => walk(v, `${p}[${i}]`)); return; }
+        for (const k of Object.keys(obj)) {
+          const v = obj[k];
+          const lc = k.toLowerCase();
+          if (typeof v === 'string' && v.length > 8 && (
+            lc.includes('apikey') || lc.includes('api_key') ||
+            lc === 'token' || lc.includes('secret') ||
+            lc.includes('password') || lc.includes('appsecret')
+          )) {
+            if (v.startsWith('secret://')) {
+              refs.push({ path: `${p}.${k}`, ref: v });
+            } else {
+              findings.push({ path: `${p}.${k}`, length: v.length, preview: v.slice(0,4)+'…'+v.slice(-4) });
+            }
+          } else if (typeof v === 'object') {
+            walk(v, `${p}.${k}`);
+          }
+        }
+      };
+      walk(c, '');
+      return json(res, { ok: true, plaintext: findings.length, refs: refs.length, findings, refList: refs });
+    }
+
+    // -------- 模型延迟/错误率（仅返回已配置 provider 的 ping 测速） --------
+    if(method==='GET' && p==='/api/models/latency') {
+      const c = read();
+      const out = [];
+      const providers = (c.models && c.models.providers) || {};
+      for (const [id, p] of Object.entries(providers)) {
+        if (!p.apiKey) { out.push({provider:id,status:'no-key'}); continue; }
+        const base = (p.baseUrl||'').replace(/\/+$/,'');
+        if (!base) { out.push({provider:id,status:'no-url'}); continue; }
+        const key = resolveApiKey(p.apiKey);
+        if (!key) { out.push({provider:id,status:'no-key'}); continue; }
+        const t0 = Date.now();
+        const latUrl = base.endsWith('/v1') ? base + '/models' : base + '/v1/models';
+        try {
+          // 直接用 node fetch：不再把 key 拼进 PowerShell 命令行（那会出现在进程列表里），
+          // 也能直接用 SecretRef 解析出来的真 key。
+          const resp = await fetch(latUrl, { headers:{ 'Authorization':'Bearer '+key }, signal: AbortSignal.timeout(8000) });
+          const dt = Date.now() - t0;
+          out.push({ provider:id, status: resp.ok ? 'ok' : ('http-'+resp.status), latencyMs: dt, code: 'HTTP ' + resp.status });
+        } catch (e) {
+          out.push({ provider:id, status:'err', latencyMs: Date.now()-t0, error: String(e.message||e).slice(0,200) });
+        }
+      }
+      return json(res, { ok: true, results: out, at: Date.now() });
+    }
+
     // POST
     if(method==='POST') {
       let b;
@@ -1632,6 +2470,480 @@ const srv = http.createServer(async (req,res)=>{
         provAvailCache = null; provAvailCacheAt = 0;
         log(`Rollback: ${path.basename(resolved)}`); return json(res,{status:'ok',preBackup:path.basename(preBak)});
       }
+      // 重启 gateway —— 不依赖 openclaw gateway stop（那个在普通 PowerShell 里
+      // 会因 env 错配报 "non-default state dir"）。直接：杀进程 → 清 lock →
+      // 触发计划任务 → 轮询 /health。
+      // Body: { waitMs?: 15000, confirm?: "yes" }
+      if(p==='/api/gateway/restart') {
+        if (String(b?.confirm||'') !== 'yes') {
+          return json(res, {ok:false, error:'Need confirm:"yes" in body to restart gateway', hint:'发送 {confirm:"yes", waitMs:20000}'}, 400);
+        }
+        // 上限 180s：gateway 启动含 778 个模型预热要 90~120s
+        const waitMs = Math.max(2000, Math.min(parseInt(b?.waitMs)||90000, 180000));
+        const t0 = Date.now();
+        try { log(`Gateway restart: requested (waitMs=${waitMs})`); } catch (_) {}
+        // Step 1: 杀 gateway 进程（用 Get-CimInstance 取 CommandLine，PS 5.1 的 Get-Process 没这属性）
+        // 重要：runPowerShell 返回 {out,err,...} 对象，正则要解析 .out 字符串部分，不能用整个对象。
+        let killed = 0;
+        let killErr = '';
+        const findKill = await runPowerShell(`
+          $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+          $gw = @($procs | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $ids = $gw | ForEach-Object { $_.ProcessId }
+          $gw | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
+          $r = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $r | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 1
+          'killed=' + $ids.Count
+        `);
+        if (findKill?.timedOut) killErr = 'kill-script-timeout';
+        else if (findKill?.error) killErr = `kill-err: ${findKill.error}`;
+        const km = /killed=(\d+)/.exec(findKill?.out || ''); if (km) killed = parseInt(km[1]);
+        // Step 2: 清 lock 文件（用 cmd /c mavis-trash 走回收站，避免 shell 删除拦截）
+        const lockDir = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw');
+        let locksCleaned = 0;
+        try {
+          for (const f of fs.readdirSync(lockDir)) {
+            if (f.endsWith('.lock')) {
+              try { spawnSync('cmd.exe', ['/d','/c','mavis-trash',path.join(lockDir,f)], { windowsHide: true, stdio:'ignore' });
+                locksCleaned++;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        // Step 3: 触发计划任务
+        const startRes = await runPowerShell(`
+          Stop-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+          Start-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          if ($?) { 'started' } else { 'start-failed' }
+        `);
+        // Step 4: 轮询 /health
+        const started = /started/.test(startRes?.out || '');
+        let healthy = false;
+        let pid = null;
+        if (started) {
+          const deadline = Date.now() + waitMs;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 1500));
+            try {
+              const p = spawnSync('powershell',['-NoProfile','-Command',
+                "$g = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($g) { 'pid=' + $g }"
+              ], { windowsHide: true, encoding:'utf8' });
+              const m = (p.stdout||'').match(/pid=(\d+)/);
+              if (m) pid = parseInt(m[1]);
+            } catch (_) {}
+            try {
+              const http = require('http');
+              const ok = await new Promise(res => {
+                const req = http.get('http://127.0.0.1:18888/health', { timeout: 2000 }, r => { res(r.statusCode === 200); r.resume(); });
+                req.on('error', () => res(false));
+                req.on('timeout', () => { req.destroy(); res(false); });
+              });
+              if (ok) { healthy = true; break; }
+            } catch {}
+          }
+        }
+        const elapsedMs = Date.now() - t0;
+        // 诊断：列出 startRes 内容（截前 200 字符）方便排查 ps 脚本为什么没正常返回
+        const startOutPreview = (startRes?.out || '').replace(/\s+/g, ' ').slice(0, 200);
+        const startErrPreview = (startRes?.err || '').replace(/\s+/g, ' ').slice(0, 200);
+        try { log(`Gateway restart: killed=${killed} locksCleaned=${locksCleaned} started=${started} healthy=${healthy} pid=${pid} elapsedMs=${elapsedMs} startOut='${startOutPreview}' startErr='${startErrPreview}' killErr='${killErr}'`); } catch {}
+        return json(res, {
+          ok: healthy,
+          killed, locksCleaned, started, healthy, pid,
+          elapsedMs,
+          killErr,
+          startOut: startOutPreview,
+          startErr: startErrPreview,
+          ...(healthy ? {} : {error:`Gateway not healthy after ${elapsedMs}ms`})
+        }, healthy ? 200 : 504);
+      }
+      // 启动 gateway —— 不杀进程，只清 lock + 触发计划任务 + 等 health。
+      // 区别于 /api/gateway/restart：restart 是 kill+start（用于配置改动后热重载），
+      // start 是无脑启动（gateway 死了/从没起来时用）。不需要 confirm 防误点。
+      // Body: { waitMs?: 90000 }（默认 90s，上限 180s）
+      if(p==='/api/gateway/start') {
+        const waitMs = Math.max(2000, Math.min(parseInt(b?.waitMs)||90000, 180000));
+        const t0 = Date.now();
+        try { log(`Gateway start: requested (waitMs=${waitMs})`); } catch (_) {}
+        // Step 1: 清 lock 文件
+        const lockDir = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw');
+        let locksCleaned = 0;
+        try {
+          for (const f of fs.readdirSync(lockDir)) {
+            if (f.endsWith('.lock')) {
+              try { spawnSync('cmd.exe', ['/d','/c','mavis-trash',path.join(lockDir,f)], { windowsHide: true, stdio:'ignore' });
+                locksCleaned++;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        // Step 2: 触发计划任务
+        let started = false;
+        const startRes = await runPowerShell(`
+          Stop-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          Start-Sleep -Seconds 1
+          Start-ScheduledTask -TaskName 'OpenClaw Gateway' -ErrorAction SilentlyContinue
+          if ($?) { 'started' } else { 'start-failed' }
+        `);
+        started = /started/.test(startRes?.out || '');
+        // Step 3: 轮询 /health
+        let healthy = false;
+        let pid = null;
+        if (started) {
+          const deadline = Date.now() + waitMs;
+          while (Date.now() < deadline) {
+            await new Promise(r => setTimeout(r, 1500));
+            try {
+              const p = spawnSync('powershell',['-NoProfile','-Command',
+                "$g = Get-CimInstance Win32_Process -Filter \"Name='node.exe'\" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' } | Select-Object -First 1 -ExpandProperty ProcessId; if ($g) { 'pid=' + $g }"
+              ], { windowsHide: true, encoding:'utf8' });
+              const m = (p.stdout||'').match(/pid=(\d+)/);
+              if (m) pid = parseInt(m[1]);
+            } catch (_) {}
+            try {
+              const http = require('http');
+              const ok = await new Promise(res => {
+                const req = http.get('http://127.0.0.1:18888/health', { timeout: 2000 }, r => { res(r.statusCode === 200); r.resume(); });
+                req.on('error', () => res(false));
+                req.on('timeout', () => { req.destroy(); res(false); });
+              });
+              if (ok) { healthy = true; break; }
+            } catch {}
+          }
+        }
+        const elapsedMs = Date.now() - t0;
+        const startOutPreview = (startRes?.out || '').replace(/\s+/g, ' ').slice(0, 200);
+        const startErrPreview = (startRes?.err || '').replace(/\s+/g, ' ').slice(0, 200);
+        try { log(`Gateway start: locksCleaned=${locksCleaned} started=${started} healthy=${healthy} pid=${pid} elapsedMs=${elapsedMs} startOut='${startOutPreview}' startErr='${startErrPreview}'`); } catch {}
+        return json(res, {
+          ok: healthy,
+          locksCleaned, started, healthy, pid,
+          elapsedMs,
+          startOut: startOutPreview,
+          startErr: startErrPreview,
+          ...(healthy ? {} : {error:`Gateway not healthy after ${elapsedMs}ms`})
+        }, healthy ? 200 : 504);
+      }
+      // 停止 gateway —— kill 所有 gateway 进程 + 清 lock。
+      // 不需要 confirm：等价于关掉本地服务，不是数据破坏性操作。
+      if(p==='/api/gateway/stop') {
+        const t0 = Date.now();
+        try { log(`Gateway stop: requested`); } catch (_) {}
+        let killed = 0;
+        let killErr = '';
+        const findKill = await runPowerShell(`
+          $procs = Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue
+          $gw = @($procs | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $ids = $gw | ForEach-Object { $_.ProcessId }
+          $gw | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 2
+          $r = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" -ErrorAction SilentlyContinue | Where-Object { $_.CommandLine -like '*openclaw*gateway*' })
+          $r | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+          Start-Sleep -Seconds 1
+          'killed=' + $ids.Count
+        `);
+        if (findKill?.timedOut) killErr = 'kill-script-timeout';
+        else if (findKill?.error) killErr = `kill-err: ${findKill.error}`;
+        const km = /killed=(\d+)/.exec(findKill?.out || ''); if (km) killed = parseInt(km[1]);
+        // 清 lock（stop 后下次启动更干净）
+        const lockDir = path.join(OPENCLAW_HOME, '.openclaw', 'tmp', 'openclaw');
+        let locksCleaned = 0;
+        try {
+          for (const f of fs.readdirSync(lockDir)) {
+            if (f.endsWith('.lock')) {
+              try { spawnSync('cmd.exe', ['/d','/c','mavis-trash',path.join(lockDir,f)], { windowsHide: true, stdio:'ignore' });
+                locksCleaned++;
+              } catch (_) {}
+            }
+          }
+        } catch (_) {}
+        const elapsedMs = Date.now() - t0;
+        try { log(`Gateway stop: killed=${killed} locksCleaned=${locksCleaned} elapsedMs=${elapsedMs} killErr='${killErr}'`); } catch {}
+        return json(res, {
+          ok: true,
+          killed, locksCleaned,
+          elapsedMs,
+          killErr
+        });
+      }
+
+      // ============== 新增功能（POST） ==============
+      // 安全审计 fix：调用 openclaw security audit --fix，icacls 收紧文件权限
+      // CLI 不支持 --non-interactive / --yes（fix 模式本身就是非交互）
+      if(p==='/api/security/fix') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        try { log(`Security fix: requested`); } catch {}
+        // 先 dry-run 看看会改什么
+        const dry = await runCli([CLI,'security','audit','--fix','--json'], 120000);
+        // 真跑
+        const real = await runCli([CLI,'security','audit','--fix'], 120000);
+        const out = (real.out || '') + (real.err || '');
+        // 解析 "Applied N" / "Fixed N" / "Wrote N" 之类的文本
+        const applied = /Applied\s+(\d+)/i.exec(out) || /Fixed\s+(\d+)/i.exec(out) || /Wrote\s+(\d+)/i.exec(out);
+        const failed = /(\d+)\s+(?:error|failure|failed)/i.exec(out);
+        try { log(`Security fix: applied=${applied?applied[1]:'?'} raw-len=${out.length}`); } catch {}
+        return json(res, {
+          ok: real.error ? false : true,
+          applied: applied ? parseInt(applied[1]) : null,
+          failed: failed ? parseInt(failed[1]) : 0,
+          raw: out.slice(0, 1500),
+          dryPreview: (dry.out + dry.err).slice(0, 500)
+        });
+      }
+
+      // Cron 增/删/启停
+      if(p==='/api/cron/add') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        const agentId = b.agent || _defaultAgentId();
+        const name = (b.name||'manual').toString().replace(/[^\w\-_.]/g,'_');
+        // CLI: openclaw cron add --agent X --name Y --every "1h"|--cron "* * * *"|--at "20m" --message|--command ...
+        const args = [CLI,'cron','add','--json','--agent',agentId,'--name',name];
+        if (b.every) args.push('--every', String(b.every));
+        else if (b.cron) args.push('--cron', String(b.cron));
+        else if (b.at) args.push('--at', String(b.at));
+        else return json(res,{ok:false,error:'specify one of: every (e.g. "1h"/"30m"), cron (5-field expr), at (ISO or "20m")'},400);
+        if (b.command) args.push('--command', String(b.command));
+        else if (b.message) args.push('--message', String(b.message));
+        else args.push('--message', 'manual cron from switcher');
+        if (b.disabled) args.push('--disabled');
+        if (b.displayName) args.push('--display-name', String(b.displayName));
+        const r = await runCli(args, 20000);
+        try { return json(res, JSON.parse(r.out)); }
+        catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+      }
+      if(p==='/api/cron/remove') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.id) return json(res,{ok:false,error:'id required'},400);
+        // CLI: openclaw cron remove <id> --json（无 --agent flag）
+        const r = await runCli([CLI,'cron','remove','--json',b.id], 10000);
+        try { return json(res, JSON.parse(r.out)); }
+        catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+      }
+      if(p==='/api/cron/toggle') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.id) return json(res,{ok:false,error:'id required'},400);
+        // CLI: openclaw cron enable <id> / disable <id> --json（无 --agent flag）
+        const action = b.enabled===false ? 'disable' : 'enable';
+        const r = await runCli([CLI,'cron',action,'--json',b.id], 10000);
+        try { return json(res, JSON.parse(r.out)); }
+        catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+      }
+
+      // Session 删除
+      if(p==='/api/sessions/delete') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.sessionId) return json(res,{ok:false,error:'sessionId required'},400);
+        // CLI: openclaw sessions delete <keys...> [--agent <id>] [--yes]
+        // 'key' 是 sessions.list 里的 key 字段（"agent:manju:feishu:direct:..."）
+        const key = b.key || `agent:${b.agent||'main'}:${b.sessionId}`;
+        const args = [CLI,'sessions','delete','--json','--yes',key];
+        if (b.agent) { args.push('--agent', b.agent); }
+        const r = await runCli(args, 15000);
+        try { return json(res, JSON.parse(r.out)); }
+        catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+      }
+
+      // ============== 通用 config patch / get ==============
+      // Body: { patch: { key: value, ... } } —— 写到临时文件，openclaw config patch --file
+      // 写完会触发 gateway 热重载（90~120s）
+      // 注意：--json 仅在 --dry-run 下生效；真写无 JSON 输出，从文本 "Applied N" 确认
+      if(p==='/api/config/patch') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.patch || typeof b.patch !== 'object') return json(res,{ok:false,error:'patch object required'},400);
+        // 拒绝明显危险路径
+        const denyPaths = ['hooks.internal', 'gateway.auth.token', 'gateway.auth.password'];
+        for (const deny of denyPaths) {
+          if (JSON.stringify(b.patch).includes(deny)) return json(res,{ok:false,error:`patching "${deny}" is not allowed via this endpoint`},403);
+        }
+        const tmp = path.join(os.tmpdir(), `cfg-patch-${Date.now()}-${process.pid}.json5`);
+        try {
+          fs.writeFileSync(tmp, JSON.stringify(b.patch, null, 2), 'utf8');
+          // 先 dry-run 校验（带 --json）
+          const dry = await runCli([CLI,'config','patch','--file',tmp,'--dry-run','--json'], 30000);
+          let dryOk = false, dryData = null;
+          try { dryData = JSON.parse(dry.out); dryOk = !!dryData.ok; } catch {}
+          if (!dryOk) {
+            try { fs.unlinkSync(tmp); } catch {}
+            return json(res, {ok:false, error:'dry-run-fail', dryData, raw: dry.out.slice(0,500), err: dry.err.slice(0,300)});
+          }
+          // 真写（不带 --json，文本输出）
+          const real = await runCli([CLI,'config','patch','--file',tmp], 30000);
+          try { fs.unlinkSync(tmp); } catch {}
+          const applied = /Applied\s+(\d+)\s+config\s+update/i.exec(real.out + real.err);
+          if (applied) {
+            try { log(`Config patch: ${applied[1]} update(s)`); } catch {}
+            return json(res, {ok:true, applied: parseInt(applied[1]), dryData, raw: (real.out+real.err).slice(0,300) });
+          }
+          return json(res, {ok:false,error:'apply-fail',raw:(real.out+real.err).slice(0,500)});
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch {}
+          return json(res,{ok:false,error:e.message},500);
+        }
+      }
+
+      // ============== 插件启停（patch plugins.entries.X.enabled） ==============
+      // --json 仅在 dry-run 下生效；真写从 "Applied N" 文本确认
+      if(p==='/api/plugin/toggle') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.id) return json(res,{ok:false,error:'id required'},400);
+        if (typeof b.enabled !== 'boolean') return json(res,{ok:false,error:'enabled (boolean) required'},400);
+        const patch = { plugins: { entries: { [b.id]: { enabled: b.enabled } } } };
+        const tmp = path.join(os.tmpdir(), `cfg-patch-${Date.now()}-${process.pid}.json5`);
+        try {
+          fs.writeFileSync(tmp, JSON.stringify(patch), 'utf8');
+          const r = await runCli([CLI,'config','patch','--file',tmp], 30000);
+          try { fs.unlinkSync(tmp); } catch {}
+          const applied = /Applied\s+(\d+)\s+config\s+update/i.exec(r.out + r.err);
+          if (applied) return json(res, {ok:true, plugin:b.id, enabled:b.enabled, applied:parseInt(applied[1])});
+          return json(res, {ok:false,error:'apply-fail',raw:(r.out+r.err).slice(0,500)});
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch {}
+          return json(res,{ok:false,error:e.message},500);
+        }
+      }
+
+      // ============== Skills 启停（patch skills.entries.X.enabled） ==============
+      if(p==='/api/skill/toggle') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.name) return json(res,{ok:false,error:'name required'},400);
+        if (typeof b.enabled !== 'boolean') return json(res,{ok:false,error:'enabled (boolean) required'},400);
+        const patch = { skills: { entries: { [b.name]: { enabled: b.enabled } } } };
+        const tmp = path.join(os.tmpdir(), `cfg-patch-${Date.now()}-${process.pid}.json5`);
+        try {
+          fs.writeFileSync(tmp, JSON.stringify(patch), 'utf8');
+          const r = await runCli([CLI,'config','patch','--file',tmp], 30000);
+          try { fs.unlinkSync(tmp); } catch {}
+          const applied = /Applied\s+(\d+)\s+config\s+update/i.exec(r.out + r.err);
+          if (applied) return json(res, {ok:true, skill:b.name, enabled:b.enabled, applied:parseInt(applied[1])});
+          return json(res, {ok:false,error:'apply-fail',raw:(r.out+r.err).slice(0,500)});
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch {}
+          return json(res,{ok:false,error:e.message},500);
+        }
+      }
+
+      // ============== Sandbox 模式（patch agents.defaults.sandbox） ==============
+      // Body: { mode: "off"|"non-main"|"all", scope?: "agent"|"session"|"shared",
+      //         backend?: "docker"|"podman", workspaceAccess?: "none"|"ro"|"rw" }
+      // 正确路径是 agents.defaults.sandbox，不是 tools.sandbox
+      if(p==='/api/sandbox/mode') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        if (!b.mode) return json(res,{ok:false,error:'mode required (off|non-main|all)'},400);
+        if (!['off','non-main','all'].includes(b.mode)) return json(res,{ok:false,error:'mode must be off|non-main|all'},400);
+        const patch = { agents: { defaults: { sandbox: { mode: b.mode } } } };
+        if (b.scope && ['session','agent','shared'].includes(b.scope)) patch.agents.defaults.sandbox.scope = b.scope;
+        if (b.backend) patch.agents.defaults.sandbox.backend = b.backend;
+        if (b.workspaceAccess && ['none','ro','rw'].includes(b.workspaceAccess)) patch.agents.defaults.sandbox.workspaceAccess = b.workspaceAccess;
+        const tmp = path.join(os.tmpdir(), `cfg-patch-${Date.now()}-${process.pid}.json5`);
+        try {
+          fs.writeFileSync(tmp, JSON.stringify(patch), 'utf8');
+          const r = await runCli([CLI,'config','patch','--file',tmp], 30000);
+          try { fs.unlinkSync(tmp); } catch {}
+          const applied = /Applied\s+(\d+)\s+config\s+update/i.exec(r.out + r.err);
+          if (applied) return json(res, {ok:true, mode:b.mode, applied:parseInt(applied[1]), raw:(r.out+r.err).slice(0,200)});
+          return json(res, {ok:false,error:'apply-fail',raw:(r.out+r.err).slice(0,500)});
+        } catch (e) {
+          try { fs.unlinkSync(tmp); } catch {}
+          return json(res,{ok:false,error:e.message},500);
+        }
+      }
+
+      // 工具权限（agents.entries.X.tools.deny）—— 通过 config patch JSON5
+      if(p==='/api/agent/tools/set') {
+        if (!b.agent) return json(res,{ok:false,error:'agent required'},400);
+        if (!Array.isArray(b.deny)) return json(res,{ok:false,error:'deny must be string[]'},400);
+        return json(res, await mutate((c) => {
+          const e = entriesAsList(c).find(x => x.id === b.agent);
+          if (!e) return { ok:false, error:`agent ${b.agent} not found` };
+          e.tools = e.tools || {};
+          e.tools.deny = b.deny;
+          setEntry(c, b.agent, e);
+          return { ok:true, agent:b.agent, deny:b.deny };
+        }));
+      }
+
+      // Sandbox 重新创建
+      if(p==='/api/sandbox/recreate') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        const args = [CLI,'sandbox','recreate','--json'];
+        if (b.all) args.push('--all');
+        else if (b.agent) args.push('--agent', b.agent);
+        const r = await runCli(args, 60000);
+        try { return json(res, JSON.parse(r.out)); }
+        catch { return json(res, {ok:false,error:'parse-fail',raw:r.out.slice(0,500)}); }
+      }
+
+      // Secrets 迁移：把 openclaw.json 里的明文 secret 移到 openclaw secrets 引用
+      // 流程：
+      //   1) 先调用 openclaw secrets set 把值存进 secret store（用 path 衍生 ref 名）
+      //   2) 然后 config patch 把原值替换为 secret:// 引用
+      // Body: { paths?: string[] } —— 默认扫描所有明文 secret 字段；可选只迁某些路径
+      if(p==='/api/secrets/migrate') {
+        if (cliMissing()) return json(res,{ok:false,error:'CLI not configured'},503);
+        const c = read();
+        const targetPaths = Array.isArray(b.paths) ? b.paths : null;
+        const findings = [];
+        const walk = (obj, p) => {
+          if (!obj || typeof obj !== 'object') return;
+          if (Array.isArray(obj)) { obj.forEach((v,i) => walk(v, `${p}[${i}]`)); return; }
+          for (const k of Object.keys(obj)) {
+            const v = obj[k];
+            const lc = k.toLowerCase();
+            if (typeof v === 'string' && v.length > 8 && (
+              lc.includes('apikey') || lc.includes('api_key') ||
+              lc === 'token' || lc.includes('secret') ||
+              lc.includes('password') || lc.includes('appsecret')
+            )) {
+              findings.push({ path: `${p}.${k}`, value: v });
+            } else if (typeof v === 'object') {
+              walk(v, `${p}.${k}`);
+            }
+          }
+        };
+        walk(c, '');
+        const todo = targetPaths ? findings.filter(f => targetPaths.includes(f.path)) : findings;
+        if (todo.length === 0) return json(res, {ok:true, migrated:0, message:'no plaintext secrets found'});
+        const results = [];
+        for (const f of todo) {
+          // 衍生 ref 名：把 path 转成 secret:// 形式（替换 . 和 [ 为 _）
+          const refName = f.path.replace(/[\.\[\]]/g, '_').replace(/^_+/, '').toLowerCase();
+          const refUri = `secret://${refName}`;
+          // 1) set
+          const setRes = await runCli([CLI,'secrets','set',refName,f.value], 10000);
+          if (setRes.error || /error|fail/i.test(setRes.out+setRes.err)) {
+            results.push({ path:f.path, status:'set-fail', err: (setRes.out+setRes.err).slice(0,200) });
+            continue;
+          }
+          // 2) patch openclaw.json：把原值换成 refUri
+          const ok = mutateSync((cur) => {
+            // 安全地按 path 走
+            const parts = f.path.split('.').flatMap(s => s.match(/[^\[\]]+|\[\d+\]/g) || []);
+            let obj = cur;
+            for (let i = 0; i < parts.length-1; i++) {
+              const p = parts[i];
+              const idx = p.match(/^\[(\d+)\]$/);
+              if (idx) { obj = obj[parseInt(idx[1])]; } else { obj = obj[p]; }
+              if (!obj) return false;
+            }
+            const last = parts[parts.length-1];
+            const idx = last.match(/^\[(\d+)\]$/);
+            if (idx) obj[parseInt(idx[1])] = refUri;
+            else obj[last] = refUri;
+            return true;
+          });
+          if (!ok) {
+            results.push({ path:f.path, status:'patch-fail', ref: refUri });
+          } else {
+            results.push({ path:f.path, status:'migrated', ref: refUri });
+          }
+        }
+        const ok = results.filter(r => r.status==='migrated').length;
+        return json(res, { ok: ok === results.length, migrated: ok, total: results.length, results });
+      }
+
       if(p==='/api/agent/create') {
         const id=b.id;
         if(!id||!/^[a-zA-Z][a-zA-Z0-9_-]{1,30}$/.test(id)) return json(res,{ok:false,error:'Agent ID 必须英文字母开头，2-30 字符 (字母/数字/下划线/连字符)'},400);
@@ -1649,7 +2961,7 @@ const srv = http.createServer(async (req,res)=>{
             return json(res,{ok:false,error:'Invalid template name'},400);
           }
           let agentWs = null;
-          try { agentWs = (read().agents?.list||[]).find(a=>a.id===tplName)?.workspace || null; } catch {}
+          try { agentWs = entryById(read(), tplName)?.workspace || null; } catch {}
           for (const cand of [
             path.join(SCRIPT_DIR, 'templates', tplName),
             path.join(WS_ROOT, '_templates', tplName),
@@ -1664,8 +2976,9 @@ const srv = http.createServer(async (req,res)=>{
           }
         }
         const c0=read();
-        // 重复创建保护：id 已存在于 agents.list 时拒绝（防同名双 entry）
-        if((c0.agents?.list||[]).some(a=>a.id===id)) return json(res,{ok:false,error:`Agent id 已存在: ${id}`},400);
+        // 重复创建保护：id 已存在于 agents.entries 时拒绝（防同名双 entry）
+        if(c0.agents?.entries && Object.prototype.hasOwnProperty.call(c0.agents.entries, id))
+          return json(res,{ok:false,error:`Agent id 已存在: ${id}`},400);
         // 工作区：显式提供则用之；留空 = openclaw 默认工作区（defaults.workspace/<id> 或 WS_ROOT/<id>）
         let ws=null, wsExplicit=false;
         if(b.workspace!==undefined && String(b.workspace).trim()!==''){
@@ -1688,11 +3001,10 @@ const srv = http.createServer(async (req,res)=>{
         fs.writeFileSync(memFile,'# Memory\n\n<!-- 新 agent 的记忆从这里开始记录 -->\n','utf8');
         const ad=path.join(AGENT_ROOT,id,'agent'); fs.mkdirSync(ad,{recursive:true});
         const c=read();
-        if(!c.agents) c.agents={defaults:{models:{}},list:[]};
-        if(!c.agents.list) c.agents.list=[];
-        if(!c.agents.defaults) c.agents.defaults={models:{}};
-        if(!c.agents.defaults.models) c.agents.defaults.models={};
-        c.agents.list.push({id,name:id,agentDir:ad, ...(wsExplicit?{workspace:ws}:{})});
+        if(!c.agents) c.agents={defaults:{}};
+        if(!c.agents.defaults) c.agents.defaults={};
+        ensureModelPolicy(c);
+        setEntry(c, id, { name:id, agentDir:ad, ...(wsExplicit?{workspace:ws}:{}) });
         if(b.appId&&b.appSecret) {
           if(!c.channels) c.channels={feishu:{enabled:true,accounts:{}}};
           if(!c.channels.feishu) c.channels.feishu={enabled:true,accounts:{}};
@@ -1717,10 +3029,15 @@ const srv = http.createServer(async (req,res)=>{
           // C2: 默认 agent 保护——删除会改变路由/工作区根的解析语义
           const delDefaultId=resolveDefaultAgentId(c);
           if(id===delDefaultId) return {ok:false,error:`「${id}」是当前默认 agent，不可直接删除。请先在编辑中把默认标记移到其他 agent，或先创建替代 agent。`};
-          const e=c.agents?.list?.find(a=>a.id===id);
+          const e=entryById(c, id);
           if(!e) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
-          if(c.agents.list) c.agents.list=c.agents.list.filter(x=>x.id!==id);
-          if(c.channels?.feishu?.accounts) delete c.channels.feishu.accounts[`${id}_bot`];
+          deleteEntry(c, id);
+          if(c.channels?.feishu?.accounts){
+            const botKey=`${id}_bot`;
+            const removedAllow=(c.channels.feishu.accounts[botKey]?.allowFrom)||[];
+            delete c.channels.feishu.accounts[botKey];
+            pruneFeishuGlobalAllowFrom(c, removedAllow);
+          }
           if(c.bindings) c.bindings=c.bindings.filter(x=>x.agentId!==id);
           return {ok:true};
         });
@@ -1753,7 +3070,7 @@ const srv = http.createServer(async (req,res)=>{
         let wsRequest = null;   // {current, wsTarget, rootWs, others} 锁外预检结果
         if(workspace!==undefined){
           const c0=read();
-          const e0=(c0.agents?.list||[]).find(a=>a.id===id);
+          const e0=entryById(c0, id);
           if(!e0) return json(res,{ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND},404);
           const current=resolveAgentWorkspace(id);
           // 安全保护：当前工作区是「默认工作区根」时禁止自动迁移整个根目录
@@ -1776,7 +3093,7 @@ const srv = http.createServer(async (req,res)=>{
           // 父目录保护：目标/当前工作区若是其他 agent 工作区的父目录（或相同路径），
           // 迁移会拖走/冲突别的 agent 的数据（如把 workspace 指向根目录会把所有 agent 目录卷走）。
           if(path.resolve(current)!==path.resolve(wsTarget)){
-            const others=(c0.agents?.list||[]).filter(a=>a.id!==id).map(a=>({id:a.id, ws:(()=>{try{return path.resolve(resolveAgentWorkspace(a.id, c0));}catch{return null;}})()})).filter(x=>x.ws);
+            const others=entriesAsList(c0).filter(a=>a.id!==id).map(a=>({id:a.id, ws:(()=>{try{return path.resolve(resolveAgentWorkspace(a.id, c0));}catch{return null;}})()})).filter(x=>x.ws);
             const t=path.resolve(wsTarget);
             const conflict=others.find(x=>x.ws===t);
             if(conflict)
@@ -1793,7 +3110,7 @@ const srv = http.createServer(async (req,res)=>{
           }
         }
         const rr = await mutate((c)=>{
-          const e=(c.agents?.list||[]).find(a=>a.id===id);
+          const e=entryById(c, id);
           if(!e) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
           // #4: 目录迁移在锁内、写配置前完成；任何后续失败都回滚目录（配置不变）
           let wsReport=[], wsChanged=false;
@@ -1820,10 +3137,9 @@ const srv = http.createServer(async (req,res)=>{
             if(!m){ rollbackWs(); return {ok:false,error:'模型不能为空'}; }
             if(!e.model) e.model={};
             e.model.primary=m;
-            // 同步注册表（与 doSwitch 一致）
-            if(!c.agents.defaults) c.agents.defaults={};
-            if(!c.agents.defaults.models) c.agents.defaults.models={};
-            if(!c.agents.defaults.models[m]) c.agents.defaults.models[m]={};
+            // 同步 allow list（替代老的 agents.defaults.models registry）
+            ensureModelPolicy(c);
+            addModelToAllowList(c, m);
           }
           if(isDefault!==undefined){
             // C6: 默认标记变更会改变默认 agent 的解析（无显式 workspace 时默认 agent 解析到
@@ -1832,7 +3148,7 @@ const srv = http.createServer(async (req,res)=>{
             // 注意：必须在写入 e.default 之前读取原默认（否则 resolveDefaultAgentId 已返回新默认）。
             if(isDefault){
               const prevDefaultId=resolveDefaultAgentId(c);
-              const prev=(c.agents?.list||[]).find(a=>a.id===prevDefaultId);
+              const prev=entryById(c, prevDefaultId);
               if(prev && prev.id!==id && !prev.workspace){
                 const rootWs=path.resolve(String(c.agents?.defaults?.workspace||'').trim()||WS_ROOT);
                 const childDir=path.join(rootWs, prev.id);
@@ -1844,6 +3160,7 @@ const srv = http.createServer(async (req,res)=>{
                 if(!childIsDir){
                   const frozen=resolveAgentWorkspace(prev.id);
                   prev.workspace=frozen;
+                  setEntry(c, prev.id, prev);   // entryById 返回的是拷贝，要写回
                 }
               }
             }
@@ -1854,6 +3171,8 @@ const srv = http.createServer(async (req,res)=>{
             if(String(workspace||'').trim()) e.workspace=wsRequest.wsTarget;
             else delete e.workspace;   // 恢复默认解析
           }
+          // 把改动写回 entries（新结构）
+          setEntry(c, id, e);
           return {ok:true,id, wsReport, wsChanged};
         });
         if (rr.ok) log(`Update agent ${id}${rr.wsChanged?' (workspace: '+rr.wsReport.join('; ')+')':''}`);
@@ -1878,7 +3197,7 @@ const srv = http.createServer(async (req,res)=>{
           if(target) c.agents.defaults.workspace=target;
           else delete c.agents.defaults.workspace;
           // 受影响 agent：无显式 workspace 的（解析会跟随默认值）
-          const affected=(c.agents.list||[]).filter(a=>!a.workspace).map(a=>a.id);
+          const affected=entriesAsList(c).filter(a=>!a.workspace).map(a=>a.id);
           return {ok:true, workspace:target||WS_ROOT, affected};
         });
         if(rr.ok) log(`Default workspace: ${target||'(openclaw default: '+WS_ROOT+')'}`);
@@ -1898,13 +3217,14 @@ const srv = http.createServer(async (req,res)=>{
         if(id==='main') return json(res,{ok:false,error:'默认 agent（main）不可重命名'},400);
         try {
           const rr = await mutate(async (c)=>{
-            const entry=(c.agents?.list||[]).find(a=>a.id===id);
+            const entry=entryById(c, id);
             if(!entry) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
-            const defs = (c.agents?.list||[]).filter(a=>a&&a.default);
-            const defaultAgentId = String((defs.length?defs[0]:(c.agents?.list||[])[0]||{}).id||'main').trim();
+            const defs = entriesAsList(c).filter(a => a.default);
+            const defaultAgentId = String((defs.length?defs[0]:entriesAsList(c)[0]||{}).id||'main').trim();
             if(id===defaultAgentId && !entry.default)
               return {ok:false,error:'当前默认 agent（无 default 标记的首个 agent）不可重命名，请先另设默认'};
-            if((c.agents?.list||[]).some(a=>a.id===newId)) return {ok:false,error:`id 已存在: ${newId}`};
+            if(c.agents?.entries && Object.prototype.hasOwnProperty.call(c.agents.entries, newId))
+              return {ok:false,error:`id 已存在: ${newId}`};
             // C1: 工作区迁移按「真实解析位置」计算，而非硬编码 WS_ROOT/<id>：
             //   - 无显式 workspace（走 defaults.workspace/<id>）→ 目标 = defaults.workspace/<newId>
             //   - 显式 workspace 且末段目录名 == id（如 D:\openclaw\workspace\mybot）→ 同级改名为 <newId>
@@ -1939,9 +3259,8 @@ const srv = http.createServer(async (req,res)=>{
               for(const m of moved.reverse()){ try{ fs.renameSync(m.to,m.from); }catch{} }
               return {ok:false,error:'目录迁移失败（已回滚）: '+e.message};
             }
-            // 3) 配置字段
+            // 3) 配置字段：写入新 key 并删旧 key
             if(entry){
-              entry.id=newId;
               if(!entry.name || entry.name===id) entry.name=newId;
               if(entry.workspace && newWs && norm(entry.workspace)===oldWs) entry.workspace=newWs;
               if(entry.agentDir){
@@ -1950,6 +3269,9 @@ const srv = http.createServer(async (req,res)=>{
                 if(n===oldAgentDir) entry.agentDir=newAgentDir;
                 else if(n===path.join(AGENT_ROOT,id,'agent')) entry.agentDir=path.join(AGENT_ROOT,newId,'agent');
               }
+              // 写新 entry（不含 id 字段，因为 id 是 key），删旧 key
+              setEntry(c, newId, entry);
+              deleteEntry(c, id);
             }
             // 4) bindings（agentId + 飞书账号 accountId）
             let bindingsChanged=0;
@@ -1999,7 +3321,7 @@ const srv = http.createServer(async (req,res)=>{
           if(tplName.includes('..')||path.isAbsolute(tplName)||!/^[a-zA-Z0-9_./-]{1,60}$/.test(tplName))
             return json(res,{ok:false,error:'Invalid template name'},400);
           let agentWs=null;
-          try { agentWs=(read().agents?.list||[]).find(a=>a.id===tplName)?.workspace || null; } catch {}
+          try { agentWs=entryById(read(), tplName)?.workspace || null; } catch {}
           for(const cand of [
             path.join(SCRIPT_DIR,'templates',tplName),
             path.join(WS_ROOT,'_templates',tplName),
@@ -2035,7 +3357,7 @@ const srv = http.createServer(async (req,res)=>{
         if(typeof tool!=='string' || !/^[a-zA-Z0-9_.:-]{1,64}$/.test(tool))
           return json(res,{ok:false,error:'Invalid tool name'},400);
         const rr = await mutate((c)=>{
-          const e=(c.agents?.list||[]).find(a=>a.id===id);
+          const e=entryById(c, id);
           if(!e) return {ok:false,error:`Agent "${id}" not found`,code:E.NOT_FOUND};
           if(!e.tools) e.tools={};
           if(!Array.isArray(e.tools.deny)) e.tools.deny=[];
@@ -2044,6 +3366,7 @@ const srv = http.createServer(async (req,res)=>{
           if(!deny && idx>=0) e.tools.deny.splice(idx,1);
           if(!e.tools.deny.length) delete e.tools.deny;
           if(Object.keys(e.tools).length===0) delete e.tools;
+          setEntry(c, id, e);   // entryById 是拷贝，要写回
           return {ok:true,id,tool,denied:!!deny};
         });
         if (rr.ok) log(`Tools ${id}: ${tool} ${rr.denied?'denied':'allowed'}`);
@@ -2116,15 +3439,39 @@ const srv = http.createServer(async (req,res)=>{
         write(c); log(`Feishu bot save: ${normalized}${botKey!==normalized?' (auto-normalized from '+botKey+')':''}`);
         return json(res,{ok:true,botKey:normalized,normalized:botKey!==normalized});
       }
+      // 删 bot 时同步清理全局默认白名单里「它独占」的 open_id。
+      // 全局列表是「注册过的所有 bot 的 owner 累计」（见 /api/feishu/regsave：
+      // 注册时同时写全局和账号级），删 bot 不清就会留下孤儿条目，
+      // 让全局白名单条数比 bot 数多（2026-08-24 删掉第 11 个 bot 后就多了一条）。
+      // 注意：别的 bot 还在用的 open_id 必须保留，所以只删「独占」的。
+      function pruneFeishuGlobalAllowFrom(cfg, removedAllowFrom){
+        try{
+          const list = cfg?.channels?.feishu?.allowFrom;
+          if(!Array.isArray(list) || !removedAllowFrom || !removedAllowFrom.length) return 0;
+          const stillUsed = new Set();
+          for(const a of Object.values(cfg?.channels?.feishu?.accounts||{})){
+            for(const x of (a.allowFrom||[])) stillUsed.add(String(x).trim());
+          }
+          const removed = new Set(removedAllowFrom.map(x=>String(x).trim()).filter(Boolean));
+          const n0 = list.length;
+          cfg.channels.feishu.allowFrom = list.filter(x=>{
+            const v = String(x).trim();
+            return !(removed.has(v) && !stillUsed.has(v));
+          });
+          return n0 - cfg.channels.feishu.allowFrom.length;
+        }catch(e){ return 0; }
+      }
       if(p==='/api/feishu/bot/delete') {
         const {botKey}=b;
         if(!botKey) return json(res,{ok:false,error:'需要 botKey'},400);
         const c=read();
+        const removedAllow=(c.channels?.feishu?.accounts?.[botKey]?.allowFrom)||[];
         if(c.channels?.feishu?.accounts) delete c.channels.feishu.accounts[botKey];
+        const pruned=pruneFeishuGlobalAllowFrom(c, removedAllow);
         // 同步删除相关 binding
         if(c.bindings) c.bindings=c.bindings.filter(x=>!(x.match?.channel==='feishu'&&x.match?.accountId===botKey));
-        write(c); log(`Feishu bot delete: ${botKey}`);
-        return json(res,{ok:true});
+        write(c); log(`Feishu bot delete: ${botKey}${pruned?` (pruned ${pruned} global allowFrom)`:''}`);
+        return json(res,{ok:true,prunedGlobalAllowFrom:pruned});
       }
       if(p==='/api/feishu/binding/save') {
         const {botKey,agentId}=b;
@@ -2312,7 +3659,7 @@ const srv = http.createServer(async (req,res)=>{
       try {
         const cWs=read();
         defWs = String(cWs.agents?.defaults?.workspace || '').trim();
-        for(const a of (cWs.agents?.list||[])){ try{ agentWs.push(resolveAgentWorkspace(a.id, cWs)); }catch{} }
+        for(const a of entriesAsList(cWs)){ try{ agentWs.push(resolveAgentWorkspace(a.id, cWs)); }catch{} }
       } catch {}
       const allowed = [
         BACKUP_DIR,

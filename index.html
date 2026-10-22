@@ -91,6 +91,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
 .lg .err{color:#ff6b6b}.lg .ok{color:#51cf66}
 .modal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;z-index:100}
 .modal.modal-open{display:flex !important}
+    .modal.modal-confirm{z-index:300}
 .mc{border-radius:14px;padding:20px;width:480px;max-width:90vw;max-height:90vh;overflow-y:auto}
 .mc h3{font-size:15px;margin-bottom:10px}
 .mc .mlabel{display:block;font-size:11px;font-weight:500;margin-top:8px;margin-bottom:3px}
@@ -119,7 +120,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <!-- Header -->
   <div class="f" style="justify-content:space-between;margin-top:24px">
     <div>
-      <div class="h1">🐾 Model Switcher <span v-if="authRequired" title="Server requires bearer token" style="font-size:13px;color:#d33;margin-left:6px">🔐</span></div>
+      <div class="h1">🐾 Model Switcher</div>
       <div class="sub">
         <span v-if="loading" class="pulse">加载中...</span>
         <template v-else>
@@ -133,7 +134,26 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       </div>
     </div>
     <div v-if="!loading" class="f" style="gap:6px;align-items:center">
-      <span class="tg tgb">v{{ status.version || '6.5.2' }}</span>
+      <span class="tg tgb">v{{ status.version || '6.5.3' }}</span>
+      <!-- Gateway 状态指示器：dot + 文案。null=刚加载；true=健康；false=挂了/未起 -->
+      <span class="lbl" :title="gatewayUp===true?'openclaw gateway 在线':gatewayUp===false?'openclaw gateway 离线':'未知'"
+            style="display:inline-flex;align-items:center;gap:4px">
+        <span :style="'width:8px;height:8px;border-radius:50%;display:inline-block;' +
+                      (gatewayUp===null?'background:#86868b' : gatewayUp ? 'background:#51cf66;box-shadow:0 0 6px #51cf66' : 'background:#ff6b6b;box-shadow:0 0 6px #ff6b6b')"></span>
+        <span style="font-size:11px">{{ gatewayUp===true?'Gateway 在线':gatewayUp===false?'Gateway 离线':'检测中…' }}</span>
+      </span>
+      <button class="btn xs" @click="startGateway" :disabled="starting || restarting"
+              :title="starting ? '启动中…' : '清 lock + 触发计划任务 + 等 /health 返回 200（约 90~120s）'"
+              :style="starting ? 'background:#1e2e3a;color:#74c0fc;cursor:wait' : 'background:#1e3a1e;color:#51cf66'"
+              data-btn="start-gateway">▶ {{ starting ? '启动中…' : '启动' }}</button>
+      <button class="btn xs" @click="stopGateway" :disabled="stopping || restarting"
+              :title="stopping ? '停止中…' : '杀掉所有 gateway 进程 + 清 lock'"
+              :style="stopping ? 'background:#3a2e1e;color:#ffd43b;cursor:wait' : 'background:#2e2e2e;color:#adb5bd'"
+              data-btn="stop-gateway">■ {{ stopping ? '停止中…' : '停止' }}</button>
+      <button class="btn xs" @click="restartGateway" :disabled="restarting"
+              :title="restarting ? '重启中…' : '杀掉 gateway 进程 + 清 lock + 触发计划任务 + 等 /health 返回 200'"
+              :style="restarting ? 'background:#3a2e1e;color:#ffd43b;cursor:wait' : 'background:#3a1e1e;color:#ff6b6b'"
+              data-btn="restart-gateway">⟳ {{ restarting ? '重启中…' : '重启' }}</button>
       <button class="btn xs pri" @click="openInstallModal" title="安装 openclaw 前置环境与 openclaw 本体（可选安装位置/默认工作区）" data-btn="install">🛠 安装 openclaw</button>
       <button @click="toggleTheme" :title="'切换 ' + (theme==='dark'?'亮色':'暗色') + ' 模式'" style="background:transparent;border:1px solid var(--border);color:var(--fg);border-radius:6px;padding:3px 8px;cursor:pointer;font-size:12px">
         <span v-if="theme==='dark'">☀️</span>
@@ -141,6 +161,14 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       </button>
     </div>
   </div>
+
+  <!-- 顶部锚点导航（sticky，21 个 section 跳转） -->
+  <div style="position:sticky;top:0;z-index:50;background:var(--bg,#fff);padding:8px 0 6px;border-bottom:1px solid var(--border);margin-bottom:12px;overflow-x:auto;white-space:nowrap;-webkit-overflow-scrolling:touch">
+    <span style="font-size:10px;color:#86868b;margin-right:6px">跳转:</span>
+    <a v-for="a in anchors" :key="a.id" :href="'#'+a.id" @click="scrollTo(a.id)" :style="'display:inline-block;padding:3px 9px;margin-right:4px;font-size:11px;border-radius:12px;cursor:pointer;text-decoration:none;background:' + (a.badge ? a.badge : 'var(--surface,#f4f4f7)') + ';color:' + (a.badge ? '#fff' : 'var(--fg)')">{{ a.label }}</a>
+  </div>
+
+  <a id="sec-overview"></a>
 
   <!-- 概览 -->
   <div class="card">
@@ -158,24 +186,24 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
         <span style="font-size:12px;font-weight:600">🤖 Agent（{{ agents.length }}）</span>
         <button class="btn pri xs" @click="openCreate" data-btn="create">+ 新建</button>
       </div>
-      <div v-for="a in agents" :key="a.id" class="kr" :class="{flash: a._flashing}" :style="a.isDefault ? 'font-size:12px;padding:6px 0;gap:8px;color:#ff6b6b;font-weight:600' : 'font-size:12px;padding:6px 0;gap:8px'">
-        <span style="font-weight:600;width:130px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="a.name && a.name !== a.id ? a.id+'（'+a.name+'）' : a.id">{{ a.id }}<template v-if="a.name && a.name !== a.id"><span style="color:#86868b;font-weight:400;margin-left:4px">（{{ a.name }}）</span></template><template v-if="a.isDefault"><span style="color:#ff6b6b;margin-left:6px" title="默认 Agent（未指定 agent 时路由/工作区根）">★默认</span></template></span>
-        <span style="flex:1;font-size:10px;color:#6e6e73;font-family:monospace">{{ short(a.model) }}</span>
-        <span style="flex:1;font-size:10px;color:#6e6e73">{{ ws(a.workspace) }}</span>
-        <button v-if="a.workspace" class="btn xs sec" @click="openFolder(a.workspace)" :title="'在资源管理器中打开工作区 ' + a.workspace">📂</button>
-        <button class="btn xs sec" @click="openAgentEditModal(a)" title="编辑 Agent（名称/默认模型/默认标记）">✏️</button>
-        <span style="display:flex;gap:4px;align-items:center;flex-shrink:0">
-          <button class="btn xs" :style="toolDenied(a,'cron') ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a2e1e;color:#ffd43b'"
-                  @click="toggleTool(a,'cron')"
-                  :title="toolDenied(a,'cron') ? 'cron 已禁用 — 点击启用（注意：LM Studio 模型会因 cron 的 schema 报 400）' : 'cron 已启用 — 点击禁用（用 LM Studio 模型时建议禁用）'">
-            {{ toolDenied(a,'cron') ? '🔒 cron 禁用' : 'cron 启用 ⚠️' }}
-          </button>
-          <span v-if="otherDenied(a).length" style="font-size:9px;color:#86868b" :title="'其他禁用: ' + otherDenied(a).join(', ')">
-            -{{ otherDenied(a).join(',') }}
+      <div v-for="a in agents" :key="a.id" class="kr" :class="{flash: a._flashing}" :style="[AGENT_ROW_GRID, a.isDefault ? 'color:#ff6b6b;font-weight:600' : '']">
+        <span style="font-weight:600;width:96px;flex-shrink:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="a.name && a.name !== a.id ? a.id+'（'+a.name+'）' : a.id">{{ a.id }}<template v-if="a.name && a.name !== a.id"><span style="color:#86868b;font-weight:400;margin-left:4px">（{{ a.name }}）</span></template><template v-if="a.isDefault"><span style="color:#ff6b6b;margin-left:6px" title="默认 Agent（未指定 agent 时路由/工作区根）">★默认</span></template></span>
+        <span style="width:84px;flex-shrink:0;display:flex;align-items:center;min-width:0">
+          <span v-if="otherDenied(a).length" style="font-size:9px;color:#8a8a90;background:var(--surface);border:1px solid var(--border);border-radius:4px;padding:0 5px;line-height:16px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%" :title="'已禁用工具: ' + otherDenied(a).join(', ')">
+            🔒 {{ otherDeniedShort(a).join('/') }}
           </span>
         </span>
-        <button class="btn xs sec" @click="openTemplateModal(a)" title="切换模板（慎用：覆盖 AGENTS.md 等模板文件并重置记忆）">🧩 模板</button>
-        <button class="btn xs dng" @click="deleteAgent(a.id)" style="margin-left:4px">删除</button>
+        <span style="min-width:0;font-size:10px;font-weight:400;color:#6e6e73;font-family:monospace;overflow:hidden;text-overflow:ellipsis" :title="a.model">{{ short(a.model) }}</span>
+        <span style="min-width:0;font-size:10px;font-weight:400;color:#6e6e73;overflow:hidden;text-overflow:ellipsis">{{ ws(a.workspace) }}</span>
+        <button class="btn xs sec" @click="openFolder(a.workspace)" :disabled="!a.workspace" :title="a.workspace ? ('在资源管理器中打开工作区 ' + a.workspace) : '未设置工作区'">📂</button>
+        <button class="btn xs sec" @click="openAgentEditModal(a)" title="编辑 Agent（名称/默认模型/默认标记）">✏️</button>
+        <button class="btn xs" :style="toolDenied(a,'cron') ? 'background:#1e3a1e;color:#51cf66;justify-content:center;white-space:nowrap' : 'background:#3a2e1e;color:#ffd43b;justify-content:center;white-space:nowrap'"
+                @click="toggleTool(a,'cron')"
+                :title="toolDenied(a,'cron') ? 'cron 已禁用 — 点击启用（注意：LM Studio 模型会因 cron 的 schema 报 400）' : 'cron 已启用 — 点击禁用（用 LM Studio 模型时建议禁用）'">
+          {{ toolDenied(a,'cron') ? '🔒 cron' : 'cron ⚠️' }}
+        </button>
+        <button class="btn xs sec" @click="openTemplateModal(a)" style="white-space:nowrap" title="切换模板（慎用：覆盖 AGENTS.md 等模板文件并重置记忆）">🧩 模板</button>
+        <button class="btn xs dng" @click="deleteAgent(a.id)" style="margin-left:4px;white-space:nowrap">删除</button>
       </div>
       <div class="f mt" style="justify-content:space-between;align-items:center;border-top:1px solid var(--soft2);padding-top:8px">
         <span style="font-size:12px;font-weight:600;display:flex;align-items:center;gap:6px;min-width:0">
@@ -245,7 +273,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   <div class="card">
     <div class="f" style="justify-content:space-between">
       <div class="hdr">🔑 配置模型</div>
-      <button class="btn xs" @click="refreshAllProviders" :disabled="refreshingAll || !providers.length" title="对每个已配 provider 调 /v1/models，覆盖本地列表 + 清理孤儿">
+      <button class="btn xs" @click="refreshAllProviders" :disabled="refreshingAll || !providers.length" title="验证并更新实际模型：对每个已配 provider 实时调 /v1/models，覆盖本地模型列表 + 清理孤儿，并列出新增/移除明细">
         <span v-if="refreshingAll">⏳ 刷新中…</span>
         <span v-else>🔄 全部刷新</span>
       </button>
@@ -267,6 +295,33 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
       </tr>
       <tr v-if="!providers.length"><td colspan="5" style="text-align:center;padding:8px;color:#86868b">暂无已配置供应商 — 在下方添加</td></tr>
     </table>
+    <div v-if="refreshResults.length" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--soft2)">
+      <div style="font-size:11px;color:#6e6e73;margin-bottom:4px;display:flex;align-items:center;gap:6px">
+        <span>🔍 验证结果 · 实际模型取自各供应商实时 /v1/models</span>
+        <span style="font-size:10px;color:#86868b">{{ refreshOkCount }}/{{ refreshResults.length }} 通过</span>
+      </div>
+      <div v-for="r in refreshResults" :key="r.provider" style="font-size:11px;padding:3px 0;border-bottom:1px solid var(--soft2)">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+          <span style="width:84px;flex-shrink:0;font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" :title="r.provider">{{ r.provider }}</span>
+          <template v-if="r.ok">
+            <span style="color:#1a7d1a">✓ {{ r.count }} 个实际模型</span>
+            <span v-if="r.added" style="color:#1a7d1a">新增 {{ r.added }}</span>
+            <span v-if="r.dropped" style="color:#b8860b">移除 {{ r.dropped }}</span>
+            <span style="color:#86868b;font-size:10px">{{ r.elapsedMs }}ms</span>
+            <details style="flex:1;min-width:120px">
+              <summary style="cursor:pointer;color:#86868b;font-size:10px">查看实际模型</summary>
+              <div style="font-family:monospace;font-size:10px;color:#6e6e73;word-break:break-all;padding:3px 0">
+                <span v-for="m in (r.models||[])" :key="m" style="display:inline-block;margin:0 6px 2px 0">{{ m }}</span>
+                <span v-if="r.totalModels > (r.models||[]).length" style="color:#86868b">…共 {{ r.totalModels }} 个</span>
+              </div>
+              <div v-if="(r.addedIds||[]).length" style="font-size:10px;color:#1a7d1a">＋ 新增：{{ r.addedIds.join('、') }}</div>
+              <div v-if="(r.droppedIds||[]).length" style="font-size:10px;color:#b8860b">－ 移除：{{ r.droppedIds.join('、') }}</div>
+            </details>
+          </template>
+          <span v-else style="color:#c92a2a" :title="r.error">✗ {{ refreshErrText(r.error) }}</span>
+        </div>
+      </div>
+    </div>
     <div class="mt f g2" style="margin-top:8px;padding-top:8px;border-top:1px solid var(--soft2)">
       <select v-model="kf.provider" style="max-width:190px">
         <option value="">选供应商</option>
@@ -568,6 +623,210 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
+  <!-- ============ 运维 / Ops 面板（13 个） ============ -->
+
+  <!-- 🛡️ 安全审计 -->
+  <div class="card" id="sec-audit">
+    <div class="hdr">🛡️ 安全审计
+      <button class="btn xs" @click="loadSecAudit" :disabled="secLoading" title="自动 stop/start gateway（约 2 分钟，含 778 模型预热）">🔄 重新扫描 (~2 分钟)</button>
+      <button v-if="secAudit && (secAudit.summary?.critical||0) + (secAudit.summary?.warn||0) > 0"
+              class="btn xs" style="background:#3a1e1e;color:#ff6b6b" @click="secFix" :disabled="secFixing">
+        {{ secFixing ? '修复中…' : '🛠 一键修复（' + (secAudit.summary.critical||0) + 'C / ' + (secAudit.summary.warn||0) + 'W）' }}
+      </button>
+      <span v-if="secAudit" style="font-size:11px;color:#86868b;margin-left:6px">
+        最近扫描: {{ new Date(secAudit.ts).toLocaleTimeString('zh-CN') }}
+      </span>
+    </div>
+    <div v-if="secLoading" class="loading">扫描中（30-45s）…</div>
+    <template v-else-if="secAudit">
+      <div v-if="secAudit.error" style="color:#ff6b6b">❌ {{ secAudit.error }}</div>
+      <div v-else>
+        <div class="f" style="gap:8px;flex-wrap:wrap;margin-bottom:10px">
+          <span class="tg" style="background:#ff6b6b;color:#fff">Critical: {{ secAudit.summary.critical||0 }}</span>
+          <span class="tg" style="background:#ffd43b;color:#000">Warn: {{ secAudit.summary.warn||0 }}</span>
+          <span class="tg" style="background:#74c0fc;color:#000">Info: {{ secAudit.summary.info||0 }}</span>
+        </div>
+        <div style="max-height:480px;overflow:auto;font-size:11px">
+          <div v-for="f in (secAudit.findings||[]).slice(0,200)" :key="f.checkId"
+               :style="'padding:6px 8px;margin-bottom:4px;border-radius:6px;border-left:3px solid ' +
+                        (f.severity==='critical'?'#ff6b6b':f.severity==='warn'?'#ffd43b':'#74c0fc') +
+                        ';background:var(--surface)'">
+            <div style="font-weight:600;margin-bottom:2px">{{ f.title }}</div>
+            <div style="color:#86868b;font-family:monospace;font-size:10px">{{ f.checkId }}</div>
+            <div style="margin-top:3px;white-space:pre-wrap">{{ (f.detail||'').slice(0,400) }}{{ f.detail?.length>400?'…':'' }}</div>
+            <div v-if="f.remediation" style="margin-top:4px;padding:4px 6px;background:#1a1a1a;color:#51cf66;font-family:monospace;font-size:10px;border-radius:3px;white-space:pre-wrap;overflow-x:auto">$ {{ f.remediation.split('Paths:')[0].slice(0,250) }}</div>
+          </div>
+          <div v-if="(secAudit.findings||[]).length > 200" style="text-align:center;color:#86868b;padding:8px">…还有 {{ secAudit.findings.length - 200 }} 条（看 switcher.log 全量）</div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- 🩺 Doctor -->
+  <div class="card" id="sec-doctor">
+    <div class="hdr">🩺 Doctor
+      <button class="btn xs" @click="loadDoctor" :disabled="doctorLoading">🔄 重新检查</button>
+      <span v-if="doctor" style="font-size:11px;color:#86868b;margin-left:6px">最近: {{ new Date(doctor.ts).toLocaleTimeString('zh-CN') }}</span>
+    </div>
+    <div v-if="doctorLoading" class="loading">检查中（最多 60s）…</div>
+    <template v-else-if="doctor">
+      <div v-if="doctor.error" style="color:#ff6b6b">❌ {{ doctor.error }}</div>
+      <div v-else>
+        <div class="f" style="gap:8px;flex-wrap:wrap;margin-bottom:8px">
+          <span class="tg" :style="(doctor.findings||[]).length===0?'background:#51cf66;color:#000':'background:#ff6b6b;color:#fff'">
+            {{ (doctor.findings||[]).length===0 ? '✅ 全部通过' : '⚠ ' + (doctor.findings||[]).length + ' 项' }}
+          </span>
+          <span style="font-size:11px;color:#86868b">已运行 {{ doctor.checksRun||0 }} 项检查 / 跳过 {{ doctor.checksSkipped||0 }}</span>
+        </div>
+        <div v-for="f in (doctor.findings||[])" :key="f.checkId"
+             :style="'padding:6px 8px;margin-bottom:4px;border-radius:6px;border-left:3px solid ' +
+                      (f.severity==='error'?'#ff6b6b':f.severity==='warning'?'#ffd43b':'#74c0fc') +
+                      ';background:var(--surface)'">
+          <div style="display:flex;justify-content:space-between;align-items:flex-start;gap:8px">
+            <div style="font-weight:600;flex:1">{{ f.message }}</div>
+            <span v-if="f.severity" :style="'font-size:9px;padding:1px 5px;border-radius:3px;color:#fff;background:' + (f.severity==='error'?'#ff6b6b':'#ffd43b')">{{ f.severity }}</span>
+          </div>
+          <div style="color:#86868b;font-size:10px;font-family:monospace;margin-top:2px">{{ f.checkId }}</div>
+          <div v-if="f.path" style="margin-top:2px;font-size:10px">📍 {{ f.path }}</div>
+          <div v-if="f.fixHint" style="margin-top:4px;padding:4px 6px;background:#1a1a1a;color:#51cf66;font-family:monospace;font-size:10px;border-radius:3px;white-space:pre-wrap;overflow-x:auto">{{ f.fixHint }}</div>
+        </div>
+      </div>
+    </template>
+  </div>
+
+  <!-- 🧠 Memory 搜索 -->
+  <div class="card" id="sec-memory">
+    <div class="hdr">🧠 Memory 搜索
+      <select v-model="memAgent" style="font-size:11px;padding:2px 6px;margin-left:6px" @change="loadMemory">
+        <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name||a.id }}</option>
+      </select>
+      <input v-model="memQuery" @keyup.enter="loadMemory" placeholder="关键词（如 'local model' / 'audio'）" style="flex:1;margin-left:6px;font-size:11px;padding:3px 8px">
+      <button class="btn xs pri" @click="loadMemory" :disabled="memLoading||!memQuery">🔍 搜索</button>
+    </div>
+    <div v-if="memLoading" class="loading">搜索中…</div>
+    <template v-else-if="memHits.length > 0">
+      <div style="max-height:560px;overflow:auto;font-size:11px;font-family:monospace">
+        <div v-for="(h,i) in memHits" :key="i" style="margin-bottom:10px;padding:8px;background:var(--surface);border-radius:6px">
+          <div style="display:flex;justify-content:space-between;margin-bottom:4px">
+            <span style="color:#74c0fc">{{ h.file }}:{{ h.startLine }}{{ h.endLine?'-'+h.endLine:'' }}</span>
+            <span style="color:#51cf66">score={{ h.score?.toFixed(3)||'?' }}</span>
+          </div>
+          <pre style="white-space:pre-wrap;margin:0;color:var(--fg);font-family:monospace;font-size:10.5px;line-height:1.5">{{ (h.preview||'').slice(0,1200) }}</pre>
+        </div>
+      </div>
+    </template>
+    <div v-else-if="memRaw" style="font-size:11px;font-family:monospace;white-space:pre-wrap;background:var(--surface);padding:8px;border-radius:6px;max-height:560px;overflow:auto">{{ memRaw }}</div>
+    <div v-else style="font-size:11px;color:#86868b;text-align:center;padding:12px">输入关键词，按 Enter 搜索 memory</div>
+  </div>
+
+  <!-- ⏰ Cron 自动化 -->
+  <div class="card" id="sec-cron">
+    <div class="hdr">⏰ Cron 自动化
+      <button class="btn xs" @click="loadCron" :disabled="cronLoading">🔄 刷新</button>
+      <button class="btn xs pri" @click="openCronAdd" style="margin-left:6px">+ 新建</button>
+    </div>
+    <div v-if="cronLoading" class="loading">加载中…</div>
+    <table v-else-if="cronJobs.length > 0" style="width:100%;font-size:11px;border-collapse:collapse">
+      <thead style="background:var(--surface)">
+        <tr><th style="text-align:left;padding:6px">名称</th><th style="text-align:left">Agent</th><th>计划</th><th>下次运行</th><th>状态</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        <tr v-for="j in cronJobs" :key="j.id" style="border-top:1px solid var(--border)">
+          <td style="padding:6px">
+            <div style="font-weight:600">{{ j.displayName||j.name }}</div>
+            <div style="color:#86868b;font-size:10px">{{ j.id.slice(0,8) }}…</div>
+          </td>
+          <td>{{ j.agentId }}</td>
+          <td>
+            <span v-if="j.schedule?.kind==='every'">每 {{ Math.round(j.schedule.everyMs/3600000) }}h</span>
+            <span v-else>{{ j.schedule?.kind }}</span>
+          </td>
+          <td>{{ j.nextRunAtMs ? new Date(j.nextRunAtMs).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}) : '—' }}</td>
+          <td>
+            <span :style="'display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;' + (j.enabled ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a2e1e;color:#ffd43b')">{{ j.enabled ? '启用' : '停用' }}</span>
+          </td>
+          <td>
+            <button class="btn xs" @click="cronToggle(j)" style="font-size:10px;padding:2px 6px">{{ j.enabled ? '停' : '启' }}</button>
+            <button class="btn xs" @click="cronRemove(j)" style="font-size:10px;padding:2px 6px;color:#ff6b6b">删</button>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+    <div v-else style="font-size:11px;color:#86868b;text-align:center;padding:12px">无 cron 任务</div>
+  </div>
+
+  <!-- 🛡️ 工具权限 -->
+  <div class="card" id="sec-tools">
+    <div class="hdr">🛡️ 工具权限（per-agent deny）
+      <span style="font-size:11px;color:#86868b;margin-left:6px">修改会让 gateway 热重载（90~120s）</span>
+    </div>
+    <div v-for="a in agents" :key="a.id" style="padding:8px;margin-bottom:6px;background:var(--surface);border-radius:6px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">
+        <span style="font-weight:600">{{ a.name||a.id }}</span>
+        <span style="font-size:10px;color:#86868b">主模型: {{ a._model||a.model||'?' }}</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:4px;align-items:center">
+        <label v-for="grp in toolGroups" :key="grp.id" style="font-size:11px;display:flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid var(--border);border-radius:12px;cursor:pointer">
+          <input type="checkbox" :checked="(a._toolsDeny||[]).includes(grp.id)" @change="toggleToolDeny(a, grp.id, $event.target.checked)" style="margin:0">
+          <span>{{ grp.label }}</span>
+        </label>
+      </div>
+    </div>
+  </div>
+
+  <!-- 🔁 配置 Diff -->
+  <div class="card" id="sec-diff">
+    <div class="hdr">🔁 配置 Diff（vs 备份）
+      <select v-model="diffBak" @change="loadDiff" style="flex:1;font-size:11px;padding:3px 6px;margin-left:6px">
+        <option value="">选择备份…</option>
+        <option v-for="b in backups" :key="b.name" :value="b.path">{{ b.name }}</option>
+      </select>
+      <button class="btn xs" @click="loadDiff" :disabled="!diffBak||diffLoading">查看差异</button>
+    </div>
+    <div v-if="diffLoading" class="loading">对比中…</div>
+    <div v-else-if="diffResult && diffResult.changes" style="max-height:500px;overflow:auto;font-size:10.5px;font-family:monospace">
+      <div style="margin-bottom:6px;font-size:11px">
+        <span class="tg" style="background:#51cf66;color:#000">+ {{ diffResult.changes.filter(c=>c.op==='added').length }} 新增</span>
+        <span class="tg" style="background:#ff6b6b;color:#fff">- {{ diffResult.changes.filter(c=>c.op==='removed').length }} 删除</span>
+        <span class="tg" style="background:#ffd43b;color:#000">~ {{ diffResult.changes.filter(c=>c.op==='changed').length }} 变化</span>
+      </div>
+      <div v-for="c in diffResult.changes.slice(0,200)" :key="c.path"
+           :style="'padding:3px 6px;margin-bottom:1px;border-radius:3px;background:' + (c.op==='added'?'#1e3a1e':c.op==='removed'?'#3a1e1e':'#3a2e1e')">
+        <span style="color:#74c0fc">{{ c.path }}</span>
+        <span style="color:#86868b;margin:0 6px">{{ c.op==='added'?'+':c.op==='removed'?'-':'~' }}</span>
+        <span style="color:#aaa">{{ JSON.stringify(c.newVal??c.oldVal).slice(0,80) }}</span>
+      </div>
+      <div v-if="diffResult.changes.length > 200" style="text-align:center;color:#86868b;padding:6px">…还有 {{ diffResult.changes.length - 200 }} 条</div>
+    </div>
+  </div>
+
+  <!-- 📊 模型延迟/健康 -->
+  <div class="card" id="sec-latency">
+    <div class="hdr">📊 模型延迟/健康
+      <button class="btn xs" @click="loadLatency" :disabled="latencyLoading">🔄 测活（每个 provider 8s timeout）</button>
+      <span v-if="latencyAt" style="font-size:11px;color:#86868b;margin-left:6px">最近: {{ new Date(latencyAt).toLocaleTimeString('zh-CN') }}</span>
+    </div>
+    <div v-if="latencyLoading" class="loading">测活中（4 provider × 8s）…</div>
+    <table v-else-if="latencyResults.length > 0" style="width:100%;font-size:11px;border-collapse:collapse">
+      <thead style="background:var(--surface)">
+        <tr><th style="text-align:left;padding:6px">Provider</th><th>状态</th><th>延迟</th><th>HTTP</th></tr>
+      </thead>
+      <tbody>
+        <tr v-for="r in latencyResults" :key="r.provider" style="border-top:1px solid var(--border)">
+          <td style="padding:6px;font-weight:600">{{ r.provider }}</td>
+          <td>
+            <span :style="'display:inline-block;padding:1px 6px;border-radius:4px;font-size:10px;' +
+                          (r.status==='ok'?'background:#1e3a1e;color:#51cf66':r.status==='err'?'background:#3a1e1e;color:#ff6b6b':'background:#3a2e1e;color:#ffd43b')">
+              {{ r.status }}
+            </span>
+          </td>
+          <td>{{ r.latencyMs ? r.latencyMs + 'ms' : '—' }}</td>
+          <td style="font-family:monospace;font-size:10px">{{ r.code||r.error||'—' }}</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
 <!-- Modal: 添加白名单 -->
   <div v-if="showAllowFromModal" class="modal modal-open" @click.self="showAllowFromModal=false">
     <div class="mc">
@@ -587,31 +846,66 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
     </div>
   </div>
 
+  <!-- Modal: Cron 新建 -->
+  <div v-if="showCronAdd" class="modal modal-open" @click.self="showCronAdd=false">
+    <div class="mc" style="max-width:520px">
+      <h3 style="margin-top:0">⏰ 新建 Cron 任务</h3>
+      <div style="font-size:11px;color:#86868b;margin-bottom:10px">三种调度方式选一种：每 N 时间 / 标准 cron 表达式 / 一次性时间</div>
+
+      <label class="mlabel">Agent（必填）</label>
+      <select v-model="cronAddForm.agent" style="width:100%;font-size:12px;padding:4px 6px;margin-bottom:8px">
+        <option v-for="a in agents" :key="a.id" :value="a.id">{{ a.name||a.id }}</option>
+      </select>
+
+      <label class="mlabel">任务名（必填，唯一）</label>
+      <input v-model="cronAddForm.name" placeholder="如 morning-briefing / review-feishu" style="width:100%;font-size:12px;padding:4px 6px;margin-bottom:10px">
+
+      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px;margin-bottom:10px">
+        <div>
+          <label class="mlabel">每 N 时间</label>
+          <input v-model="cronAddForm.every" placeholder="10m / 1h / 2d" style="width:100%;font-size:12px;padding:4px 6px">
+        </div>
+        <div>
+          <label class="mlabel">Cron 表达式</label>
+          <input v-model="cronAddForm.cron" placeholder="0 9 * * *" style="width:100%;font-size:12px;padding:4px 6px">
+        </div>
+        <div>
+          <label class="mlabel">一次性</label>
+          <input v-model="cronAddForm.at" placeholder="2026-09-09T09:00 / 20m" style="width:100%;font-size:12px;padding:4px 6px">
+        </div>
+      </div>
+      <div style="font-size:10px;color:#86868b;margin-bottom:10px">⚠ 必须填一项；every 用法（10m=10 分钟 / 1h=1 小时 / 2d=2 天），cron 5 字段或 6 字段</div>
+
+      <label class="mlabel">执行内容（agent message 或 shell command 二选一）</label>
+      <textarea v-model="cronAddForm.message" placeholder="agent message（默认）" style="width:100%;font-size:12px;padding:4px 6px;margin-bottom:4px;min-height:50px;font-family:monospace"></textarea>
+      <input v-model="cronAddForm.command" placeholder="shell command（可选，填了则用 --command 代替 message）" style="width:100%;font-size:12px;padding:4px 6px;margin-bottom:8px">
+
+      <div style="display:flex;gap:12px;align-items:center;margin-bottom:10px">
+        <label style="font-size:11px;display:flex;align-items:center;gap:4px">
+          <input type="checkbox" v-model="cronAddForm.disabled"> 创建后立即停用
+        </label>
+        <input v-model="cronAddForm.displayName" placeholder="显示名（可选）" style="flex:1;font-size:11px;padding:3px 6px">
+      </div>
+
+      <div v-if="cronAddErr" style="color:#ff6b6b;font-size:11px;margin-bottom:8px;padding:6px;background:#3a1e1e;border-radius:4px">❌ {{ cronAddErr }}</div>
+
+      <div class="ma" style="display:flex;justify-content:flex-end;gap:8px">
+        <button class="btn sec" @click="showCronAdd=false">取消</button>
+        <button class="btn pri" @click="cronAddSubmit" :disabled="cronAddSubmitting">
+          {{ cronAddSubmitting ? '创建中…' : '✓ 创建' }}
+        </button>
+      </div>
+    </div>
+  </div>
+
   <!-- Modal: 通用确认 (替代 confirm()) -->
-  <div v-if="confirmDialog.show" class="modal modal-open" @click.self="confirmDialog.show=false;confirmDialog._resolve?.(false)">
+  <div v-if="confirmDialog.show" class="modal modal-open modal-confirm" @click.self="confirmDialog.show=false;confirmDialog._resolve?.(false)">
     <div class="mc" style="max-width:480px">
       <h3 style="margin-top:0">{{ confirmDialog.title }}</h3>
       <div style="white-space:pre-wrap;font-size:13px;line-height:1.5;padding:6px 0;color:#222">{{ confirmDialog.body }}</div>
       <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
         <button class="btn sec" @click="confirmDialog.show=false;confirmDialog._resolve?.(false)">{{ confirmDialog.cancelText }}</button>
         <button :class="confirmDialog.danger?'btn danger-btn':'btn pri'" @click="confirmDialog.show=false;confirmDialog._resolve?.(true)">{{ confirmDialog.confirmText }}</button>
-      </div>
-    </div>
-  </div>
-
-  <!-- Modal: Token 输入 (auth 必需时) -->
-  <div v-if="showAuthModal" class="modal modal-open" style="z-index:300">
-    <div class="mc" style="max-width:480px">
-      <h3 style="margin-top:0">🔐 需要 Token</h3>
-      <div style="font-size:13px;line-height:1.5;color:#222;padding:6px 0">
-        这个 switcher 启用了 Token 认证。从启动它的命令行 (或 .bat 启动器) 里能找到。
-      </div>
-      <label class="mlabel">Bearer Token</label>
-      <input v-model="authModalData.value" placeholder="粘到 SWITCHER_TOKEN" @keyup.enter="confirmAuthToken" autofocus>
-      <div class="ma" style="margin-top:14px;display:flex;justify-content:flex-end;gap:8px">
-        <button class="btn sec" @click="clearAuthToken" :disabled="!authToken" title="清掉浏览器里存的旧 Token 并重试">清除已存 Token</button>
-        <button class="btn sec" @click="cancelAuthToken">取消</button>
-        <button class="btn pri" @click="confirmAuthToken" :disabled="!authModalData.value">确认</button>
       </div>
     </div>
   </div>
@@ -677,7 +971,7 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
   </div>
 
   <!-- Modal: openclaw 本体更新 -->
-  <div v-if="showOcUpdateModal" class="modal modal-open" @click.self="showOcUpdateModal=false">
+  <div v-if="showOcUpdateModal" class="modal modal-open" @click.self="!ocUpdateBusy && (showOcUpdateModal=false)">
     <div class="mc">
       <h3>⬆️ 更新 openclaw 本体</h3>
       <div style="font-size:12px;line-height:1.7;background:#2a2a30;border-radius:8px;padding:8px 10px;margin-bottom:10px">
@@ -697,7 +991,14 @@ textarea{font-family:monospace;font-size:11px;resize:vertical;min-height:60px}
           <option v-for="v in ocRecentVersions" :key="v" :value="v">{{ v }}<template v-if="v===ocInfo.current">（当前）</template><template v-if="v===ocInfo.latest">（最新）</template></option>
         </optgroup>
       </select>
-      <div v-if="ocUpdateBusy" style="font-size:11px;color:#ffd43b;margin-top:6px">⏳ 正在执行 npm install（最长 4 分钟）…</div>
+      <div v-if="ocUpdateProgress" style="margin-top:6px;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <div :style="{ fontSize:'11px', padding:'5px 8px', background:'var(--surface)', display:'flex', justifyContent:'space-between', gap:'8px', color: ocUpdateProgress.running ? '#ffd43b' : (ocUpdateProgress.ok ? '#51cf66' : '#ff6b6b') }">
+          <span>{{ ocUpdateProgress.running ? '⏳ npm install -g openclaw' : (ocUpdateProgress.ok ? '✅ 上次更新成功：' : '❌ 上次更新失败：') }}{{ (ocUpdateProgress.version && ocUpdateProgress.version !== 'latest') ? ('openclaw@' + ocUpdateProgress.version) : 'openclaw' }}</span>
+          <span style="color:#86868b;font-family:monospace">{{ Math.round((ocUpdateProgress.elapsedMs||0)/1000) }}s · {{ ocUpdateProgress.total||0 }} 行{{ ocUpdateProgress.running ? '' : (' · ' + ocUpdateTime(ocUpdateProgress)) }}</span>
+        </div>
+        <pre ref="ocUpdateLogEl" style="font-size:10px;font-family:monospace;white-space:pre-wrap;margin:0;padding:6px 8px;max-height:260px;overflow:auto;background:#1a1a1a;color:#c8c8c8">{{ (ocUpdateProgress.lines||[]).join('\n') }}</pre>
+      </div>
+      <div v-else-if="ocUpdateBusy" style="font-size:11px;color:#ffd43b;margin-top:6px">⏳ 正在执行 npm install（最长 4 分钟）…</div>
       <div v-if="ocUpdateResult" :style="'margin-top:8px;font-size:10px;font-family:monospace;white-space:pre-wrap;max-height:160px;overflow:auto;border-radius:6px;padding:6px 8px;' + (ocUpdateResult.ok ? 'background:#1e3a1e;color:#51cf66' : 'background:#3a1e1e;color:#ff6b6b')">{{ ocUpdateResult.text }}</div>
       <div class="ma">
         <button class="btn sec" @click="showOcUpdateModal=false">关闭</button>
@@ -867,6 +1168,25 @@ createApp({
     const providerEdit = ref({id:'', baseUrl:'', apiKey:'', api:'', authHeader:true});
     const providerEditError = ref(''); const providerEditSaving = ref(false);
     const refreshingAll = ref(false);
+    // 「全部刷新」的逐供应商验证结果（实际模型数 / 新增 / 移除 / 耗时 / 错误）
+    const refreshResults = ref([]);
+    const refreshOkCount = computed(() => refreshResults.value.filter(r => r.ok).length);
+    // 把后端原始错误翻成能指导下一步的说法
+    function refreshErrText(e){
+      const s = String(e||'');
+      if (/401/.test(s)) return '密钥无效或已失效（上游返回 401）';
+      if (/403/.test(s)) return '密钥无权限（上游返回 403）';
+      if (/404/.test(s)) return '接口不存在（Base URL 可能缺 /v1）';
+      if (/429/.test(s)) return '被限流（上游返回 429）';
+      if (/secret not found/i.test(s)) return 'secret store 里找不到该密钥引用';
+      if (/timeout|abort/i.test(s)) return '请求超时';
+      if (/empty model list/i.test(s)) return '接口可达但返回空模型列表';
+      return s || '失败';
+    }
+    const restarting = ref(false);  // 标记 gateway 重启进行中（disable 按钮 + 进度 toast）
+    const starting = ref(false);    // 标记 gateway 启动进行中
+    const stopping = ref(false);    // 标记 gateway 停止进行中
+    const gatewayUp = ref(null);    // null=未知, true=健康, false=挂了
     const fileAgent = ref(''); const fileList = ref({dirs:[],files:[]}); const filteredFiles = ref([]);
     const selectedFile = ref(''); const fileContent = ref(null); const fileEditing = ref(false);
     const fileFilter = ref(''); const batchModel = ref('');
@@ -946,13 +1266,13 @@ createApp({
     // Promise-based confirm. Returns true/false; renders a styled modal.
     function askConfirm({title='确认', body='', danger=false, confirmText='确定', cancelText='取消'}={}){
       return new Promise(resolve => {
+        // 已有未决的确认框时先把它判为「取消」，避免上一个 promise 永远悬空
+        try{ if(confirmDialog.value && confirmDialog.value.show && confirmDialog.value._resolve) confirmDialog.value._resolve(false); }catch(e){}
         confirmDialog.value = {show:true, title, body, danger, confirmText, cancelText, _resolve:resolve};
       });
     }
 
     // API calls
-    // ---- Auth (#13): persist bearer token in localStorage, auto-attach to every call ----
-    const authToken = ref(localStorage.getItem('switcher_token') || '');
 
     // ---- Theme (#7): 'light' | 'dark', persisted in localStorage ----
     const theme = ref(localStorage.getItem('switcher_theme') || 'light');
@@ -965,60 +1285,8 @@ createApp({
       applyTheme();
     }
     applyTheme();
-    const showAuthModal = ref(false);
-    // authModalData is a separate ref (instead of stuffing the data on showAuthModal)
-    // so the template can close the modal by just setting showAuthModal=false
-    // without losing the resolve/reject functions. Prevents a stuck modal.
-    const authModalData = ref({resolve:null, reject:null, value:''});
-    const authRequired = ref(false);  // becomes true if server demands auth
-    function setAuthToken(t) {
-      authToken.value = String(t || '').trim();  // never store stray whitespace/newlines
-      if (authToken.value) localStorage.setItem('switcher_token', authToken.value);
-      else localStorage.removeItem('switcher_token');
-    }
-    // Shared auth wait: concurrent 401s (e.g. the 11 parallel refresh()
-    // requests) must show ONE modal and all resume on a single confirm.
-    // Without this, each 401 opened its own askToken() and only the last
-    // resolve fired — the other 10 requests hung forever ("输入后仍不行").
-    let authWait = null;
-    function askToken() {
-      if (authWait) return authWait;
-      authWait = new Promise((resolve, reject) => {
-        authModalData.value = {resolve, reject, value: ''};
-        showAuthModal.value = true;
-      }).finally(() => { authWait = null; });
-      return authWait;
-    }
-    function confirmAuthToken() {
-      const d = authModalData.value;
-      const v = String(d.value || '').trim();  // trim: .bat pastes often carry trailing whitespace
-      if (!v) return;
-      const r = d.resolve;  // capture before nulling
-      showAuthModal.value = false;
-      d.resolve = null; d.reject = null;  // prevent double-call
-      r(v);
-    }
-    // Clear a stale localStorage token and retry without it (fixes the
-    // "stuck modal across refreshes" case: a dirty token kept triggering 401).
-    function clearAuthToken() {
-      const d = authModalData.value;
-      const r = d.resolve;
-      showAuthModal.value = false;
-      d.resolve = null; d.reject = null;
-      setAuthToken('');
-      r('__cleared__');
-    }
-    function cancelAuthToken() {
-      const d = authModalData.value;
-      if (!d.reject) return;
-      const rej = d.reject;
-      showAuthModal.value = false;
-      d.resolve = null; d.reject = null;
-      rej();
-    }
-    async function api(path, opts = {}, _retried = false) {
+    async function api(path, opts = {}) {
       const headers = Object.assign({}, opts.headers || {});
-      if (authToken.value) headers['Authorization'] = 'Bearer ' + authToken.value;
       const {timeout, ...rest} = opts;
       let ac = null;
       if (timeout) { ac = new AbortController(); setTimeout(()=>ac.abort(), timeout); }
@@ -1029,25 +1297,6 @@ createApp({
         if (ac && e && e.name === 'AbortError') throw new Error('请求超时（' + Math.round(timeout/1000) + 's）');
         throw e;
       }
-      if (r.status === 401) {
-        // Auth required. Probe if it's because the server needs auth at all
-        // or just our token is bad. Ask user for a new one.
-        try {
-          const status = await fetch('/api/auth/status').then(r => r.json());
-          if (status.required) {
-            authRequired.value = true;
-            const t = await askToken();
-            if (t === '__cleared__') { setAuthToken(''); return api(path, opts, true); }  // retry token-less once
-            if (!t) throw new Error('Auth required');
-            setAuthToken(t);
-            if (_retried) throw new Error('Auth failed: token rejected');  // cap: never loop forever
-            return api(path, opts, true);
-          }
-        } catch (e) {
-          if (e && e.message && (e.message.startsWith('Auth '))) throw e;
-        }
-        throw new Error(`HTTP 401`);
-      }
       if (!r.ok) {
         // Try to extract server-provided error code/message
         let detail = `HTTP ${r.status}`;
@@ -1057,7 +1306,15 @@ createApp({
       return r.json();
     }
 
-    async function loadAgents(){agents.value=await api('/api/agents');agents.value.forEach(a=>{a._sel=a.model;a._ch=false})}
+    async function loadAgents(){
+      agents.value=await api('/api/agents');
+      agents.value.forEach(a=>{
+        a._sel = a.model;
+        a._ch = false;
+        a._model = a.model;  // for tools panel display
+        a._toolsDeny = (a.tools && Array.isArray(a.tools.deny)) ? a.tools.deny : [];
+      });
+    }
     async function loadModels(){models.value=await api('/api/models')}
     async function loadProviders(){providers.value=await api('/api/providers')}
     async function loadCatalog(){catalog.value=await api('/api/providers/catalog')}
@@ -1223,17 +1480,37 @@ createApp({
     const ocUpdateVersion = ref('');
     const ocUpdateBusy = ref(false);
     const ocUpdateResult = ref(null);
+    const ocUpdateProgress = ref(null);
     async function loadOcInfo(force){
       try{
         const d = await api('/api/openclaw/update/info'+(force?'?force=1':''));
         if(d && d.ok) ocInfo.value = {current:d.current||'-',latest:d.latest||'',hasUpdate:!!d.hasUpdate,versions:d.versions||[],packagePath:d.packagePath||'',error:d.error||''};
       }catch(e){ /* 静默：网络失败不打扰 */ }
     }
+    function ocUpdateTime(p){
+      if(!p || !p.finishedAt) return '';
+      try{ return new Date(p.finishedAt).toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); }catch(e){ return ''; }
+    }
+    const ocUpdateLogEl = ref(null);
+    function ocUpdateScroll(){
+      try{ const el = ocUpdateLogEl.value; if(el) el.scrollTop = el.scrollHeight; }catch(e){}
+    }
+    async function loadOcUpdateProgress(){
+      try{
+        const d = await api('/api/openclaw/update/progress');
+        if(d && (d.lines||[]).length) ocUpdateProgress.value = d;
+        await nextTick();
+        ocUpdateScroll();
+      }catch(e){ /* 静默：取不到就保持空态 */ }
+    }
     function openOcUpdateModal(){
       ocUpdateVersion.value = '';
       ocUpdateResult.value = null;
       showOcUpdateModal.value = true;
       loadOcInfo(true);
+      // 弹窗一开就拉上一次更新的完整输出
+      // 后端持久化到 last-update.json，switcher 重启也不丢
+      loadOcUpdateProgress();
     }
     async function doOcUpdate(){
       if(ocUpdateBusy.value) return;
@@ -1242,7 +1519,17 @@ createApp({
         ? `将 openclaw 从 ${ocInfo.value.current} 更新到 ${target}？\n\n执行：npm install -g openclaw@${target}\n（历史版本可能不稳定，建议先备份配置）`
         : `将 openclaw 更新到最新版（${ocInfo.value.latest}）？\n\n执行：npm install -g openclaw\n（当前: ${ocInfo.value.current}）`;
       if(!await askConfirm({title:'更新 openclaw', danger:true, confirmText:'更新', body:confirmBody})) return;
-      ocUpdateBusy.value = true; ocUpdateResult.value = null;
+      ocUpdateBusy.value = true; ocUpdateResult.value = null; ocUpdateProgress.value = null;
+      // 轮询后端进度缓冲，把 npm 的实时输出渲染出来（原来只能干等 4 分钟看个结果）
+      const runStartedAt = Date.now();
+      const timer = setInterval(async ()=>{
+        try{
+          const d = await api('/api/openclaw/update/progress');
+          // 只接受「本次运行」的状态，否则会把上一轮的旧日志当成本次进度显示
+          if(d && d.startedAt && d.startedAt >= runStartedAt - 5000) ocUpdateProgress.value = d;
+          await nextTick(); ocUpdateScroll();
+        }catch(e){}
+      }, 1200);
       try{
         const d = await api('/api/openclaw/update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({version:target}),timeout:250000});
         ocUpdateResult.value = {ok:!!d.ok, text:(d.ok?'✅ 更新成功\n':'❌ 更新失败\n') + ((d.output||'').slice(-1500) || (d.error||'无输出'))};
@@ -1253,6 +1540,12 @@ createApp({
           showToast('更新失败: '+(d.error||'见输出'),'err');
         }
       }catch(e){ ocUpdateResult.value = {ok:false, text:'❌ 请求失败: '+e.message}; }
+      clearInterval(timer);
+      try{
+        const d = await api('/api/openclaw/update/progress');
+        if(d && d.startedAt && d.startedAt >= runStartedAt - 5000) ocUpdateProgress.value = d;
+        await nextTick(); ocUpdateScroll();
+      }catch(e){}
       ocUpdateBusy.value = false;
     }
 
@@ -1382,6 +1675,14 @@ createApp({
     // ---- Tool deny toggles (e.g. cron) ----
     function toolDenied(a,t){ return !!(a.tools?.deny||[]).includes(t); }
     function otherDenied(a){ return (a.tools?.deny||[]).filter(t=>t!=='cron'); }
+    // Agent 行用 CSS Grid 排版：列宽写死，所有徽章（🔒 禁用 / cron / 模板 / 删除）
+    // 在每一行都落在同一个 x 坐标上；用 flex 挤的话只要某个 agent 多一个徽章就整排偏移。
+    const AGENT_ROW_GRID = 'display:grid;align-items:center;column-gap:6px;row-gap:4px;font-size:12px;padding:6px 0;'
+      + 'grid-template-columns:88px 80px minmax(132px,1fr) minmax(44px,0.45fr) 30px 30px 66px 66px 48px';
+    // deny 项的可读标签：原始 id（group:web / browser）太长，挤在按钮行里很扎眼
+    const DENY_LABEL = { 'group:web':'联网', 'browser':'浏览器', 'exec':'执行命令', 'fs:write':'写文件', 'fs:read':'读文件', 'web_search':'联网搜索', 'web_fetch':'抓网页' };
+    function denyLabel(t){ return DENY_LABEL[t] || String(t).replace(/^group:/, ''); }
+    function otherDeniedShort(a){ return (a.tools?.deny||[]).filter(t=>t!=='cron').map(denyLabel); }
     async function toggleTool(a,t){
       const next = !toolDenied(a,t);
       try{
@@ -1444,19 +1745,134 @@ createApp({
       if (refreshingAll.value) return;
       if (!providers.value.length) { showToast('没有已配置的提供商','warn'); return; }
       refreshingAll.value = true;
-      showToast(`🔄 开始刷新 ${providers.value.length} 个提供商…`, 'ok');
+      refreshResults.value = [];
+      showToast(`🔄 正在验证 ${providers.value.length} 个供应商的实际模型…`, 'ok');
       try{
         const d = await api('/api/providers/refresh-all',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'});
-        const lines = (d.results||[]).map(r => {
-          if (r.skipped) return `${r.provider} ⏭无key`;
-          return r.ok ? `${r.provider} ✓${r.count} (${r.elapsedMs}ms)` : `${r.provider} ✗${r.error}`;
+        refreshResults.value = d.results||[];
+        const lines = refreshResults.value.map(r => {
+          if (r.skipped) return `${r.provider} ⏭${r.error||'无key'}`;
+          return r.ok ? `${r.provider} ✓${r.count}(+${r.added||0}/-${r.dropped||0})` : `${r.provider} ✗${refreshErrText(r.error)}`;
         });
-        const tail = lines.length > 4 ? `…${lines.length-4} more` : '';
-        const summary = `${d.succeeded}/${d.total}${d.failed?` 失败${d.failed}`:''}：${lines.slice(0,4).join('、')}${tail}`;
+        const tail = lines.length > 3 ? `…${lines.length-3} more` : '';
+        const summary = `${d.succeeded}/${d.total}${d.failed?` 失败${d.failed}`:''}：${lines.slice(0,3).join('、')}${tail}`;
         showToast(d.failed ? `⚠️ ${summary}` : `✅ ${summary}`, d.failed ? 'warn' : 'ok');
-        await refresh();
+        // 只等快的部分：模型数列立刻更新。其余面板数据后台刷新 —— refresh() 里
+        // 有走 openclaw CLI 的调用（90~115s），await 它会让按钮卡在「刷新中…」。
+        await loadProviders();
+        refresh().catch(()=>{});
       }catch(e){ showToast('刷新失败: '+e.message,'err'); }
       finally { refreshingAll.value = false; }
+    }
+    // 启动 openclaw gateway：清 lock + 触发计划任务 + 轮询 /health。
+    // 不杀进程，gateway 死了/从没起来时用。无需 confirm。
+    async function startGateway(){
+      if (starting.value || restarting.value) return;
+      starting.value = true;
+      showToast('▶ 正在启动 gateway…（约 90~120s）','warn');
+      try{
+        const d = await api('/api/gateway/start', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ waitMs:150000 }),
+          timeout: 165000
+        });
+        if (d.ok) {
+          showToast(`✅ gateway 已启动 (locksCleaned=${d.locksCleaned}, pid=${d.pid}, ${Math.round(d.elapsedMs/1000)}s)`, 'ok');
+          gatewayUp.value = true;
+        } else {
+          const diag = [
+            `startOut='${d.startOut||''}'`,
+            d.startErr && `startErr='${d.startErr}'`,
+            d.error && `error=${d.error}`
+          ].filter(Boolean).join(' | ');
+          showToast(`❌ 启动失败：started=${d.started} healthy=${d.healthy} | ${diag}`, 'err', 12000);
+          await pollGatewayStatus();
+        }
+      } catch(e){
+        showToast('❌ 启动请求失败（' + (e.message||'未知') + '）— 看 switcher.log', 'err', 10000);
+      } finally {
+        starting.value = false;
+        await pollGatewayStatus();
+      }
+    }
+
+    // 停止 openclaw gateway：kill 所有 gateway 进程 + 清 lock。
+    async function stopGateway(){
+      if (stopping.value || restarting.value) return;
+      if(!await askConfirm({
+        title:'停止 openclaw gateway', danger:true, confirmText:'确认停止',
+        body:'将杀掉所有 openclaw gateway 进程并清理 lock 文件。\n\n所有 in-flight 请求会被中断。\n\n停止后可以再点「启动」恢复。'
+      })) return;
+      stopping.value = true;
+      showToast('■ 正在停止 gateway…', 'warn');
+      try{
+        const d = await api('/api/gateway/stop', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: '{}'
+        });
+        showToast(`✅ gateway 已停止 (killed=${d.killed}, locksCleaned=${d.locksCleaned}, ${d.elapsedMs}ms)`, 'ok');
+        gatewayUp.value = false;
+      } catch(e){
+        showToast('❌ 停止失败: '+e.message, 'err');
+      } finally {
+        stopping.value = false;
+        await pollGatewayStatus();
+      }
+    }
+
+    // 探测 gateway 当前是否在线。3s timeout。
+    async function pollGatewayStatus(){
+      try {
+        const d = await api('/api/gateway/status', { timeout: 4000 });
+        gatewayUp.value = !!d.up;
+      } catch {
+        // 探测本身失败 = 当作离线
+        gatewayUp.value = false;
+      }
+    }
+
+    // 重启 openclaw gateway：杀进程 → 清 lock → 触发计划任务 → 轮询 /health。
+    // 后端走 /api/gateway/restart；不依赖 openclaw gateway stop（PS 5.1 非计划任务
+    // 上下文里那条命令会因 env 错配报 "non-default state dir"）。
+    // 真实耗时 90~120s（778 模型预热），需要 confirm 防误点。
+    async function restartGateway(){
+      if (restarting.value) return;
+      if(!await askConfirm({
+        title:'重启 openclaw gateway', danger:true, confirmText:'确认重启',
+        body:'将：\n• 杀掉当前 gateway 进程（所有 in-flight 请求会被中断）\n• 清理 .openclaw/tmp/openclaw/*.lock\n• 触发计划任务重新启动\n• 等待 /health 返回 200（778 个模型预热约 90~120s）\n\n确认继续？'
+      })) return;
+      restarting.value = true;
+      showToast('⟳ 正在重启 gateway…（约 90~120s）','warn');
+      try{
+        const d = await api('/api/gateway/restart', {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({ confirm:'yes', waitMs:150000 }),
+          timeout: 165000   // 给后端多 15s 余量（kill+start 占 ~5s，剩下的全给 health 轮询）
+        });
+        if (d.ok) {
+          showToast(`✅ gateway 已重启 (killed=${d.killed}, locksCleaned=${d.locksCleaned}, pid=${d.pid}, ${Math.round(d.elapsedMs/1000)}s)`, 'ok');
+          gatewayUp.value = true;
+        } else {
+          // 后端返回 504 时 body 仍带完整诊断
+          const diag = [
+            d.killErr && `killErr=${d.killErr}`,
+            `startOut='${d.startOut||''}'`,
+            d.startErr && `startErr='${d.startErr}'`,
+            d.error && `error=${d.error}`
+          ].filter(Boolean).join(' | ');
+          showToast(`❌ 重启失败：killed=${d.killed} started=${d.started} healthy=${d.healthy} | ${diag}`, 'err', 12000);
+          await pollGatewayStatus();
+        }
+      } catch(e){
+        // 超时/网络错误：可能是请求 165s 还没等到响应。告诉用户去看 switcher.log。
+        showToast('❌ 重启请求失败（' + (e.message||'未知') + '）— 看 switcher.log 确认 gateway 状态', 'err', 10000);
+      } finally {
+        restarting.value = false;
+        await pollGatewayStatus();
+      }
     }
 
     // Files（按目录浏览：?path= 子目录，返回 dirs+files）
@@ -1706,6 +2122,216 @@ createApp({
       reg.value={status:'idle',sessionId:'',userCode:'',interval:5,expireIn:600,remainSec:600,result:null};
     }
 
+    // ============ Ops 面板（13 个）的状态 + 方法 ============
+    // 顶部锚点导航
+    const anchors = [
+      {id:'sec-audit',label:'🛡 安全',badge:'#ff6b6b'},
+      {id:'sec-doctor',label:'🩺 Doctor'},
+      {id:'sec-memory',label:'🧠 Memory'},
+      {id:'sec-cron',label:'⏰ Cron'},
+      {id:'sec-tools',label:'🛡 工具权限'},
+      {id:'sec-diff',label:'🔁 Diff'},
+      {id:'sec-latency',label:'📊 Latency'},
+    ];
+    function scrollTo(id){
+      const el = document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior:'smooth', block:'start' });
+    }
+
+    // --- Security audit ---
+    const secAudit = ref(null);
+    const secLoading = ref(false);
+    const secFixing = ref(false);
+    async function loadSecAudit(){
+      // managed 模式: 自动 stop gateway → 跑 audit → start gateway
+      // (openclaw security audit --json 实际会 ensure schema 最新,需要写 sqlite,
+      //  跟 gateway 持有的 state 锁冲突,managed 走"managed restart path"避开。)
+      if(!await askConfirm({
+        title:'安全审计 (managed 模式)',
+        confirmText:'开始',
+        body:'会自动:\n1) 停止 openclaw gateway\n2) 跑 openclaw security audit --json\n3) 重启 gateway(778 模型预热 ~90s)\n\n全程约 2 分钟,期间 agent 会断一下。'
+      })) return;
+      secLoading.value = true;
+      showToast('🛡️ 正在跑安全审计 (~2 分钟)…', 'warn');
+      try {
+        const d = await api('/api/security/audit-managed', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({waitMs:120000}), timeout: 180000 });
+        // 后端返回 {ok, audit, gatewayWasUp, killed, restarted, healthy, ...}
+        // 真正给用户看的是 audit 字段(它本身是 openclaw 的 JSON)
+        if (d && d.audit) {
+          d.audit.ts = Date.now();
+          secAudit.value = d.audit;
+        } else {
+          // audit 失败,显示原始信息
+          secAudit.value = d || {error:'no-audit-field'};
+        }
+        const restarted = d?.restarted ? '、gateway 已重启' : (d?.gatewayWasUp ? '、gateway 启动失败请查日志' : '');
+        showToast('✅ 审计完成(' + (d?.elapsedMs||'?') + 'ms' + restarted + ')', d?.healthy===false ? 'warn' : 'ok');
+      } catch(e) { showToast('安全扫描失败: '+e.message, 'err'); }
+      finally { secLoading.value = false; }
+    }
+    async function secFix(){
+      if(!await askConfirm({
+        title:'一键收紧 openclaw 安全',
+        danger:true, confirmText:'执行',
+        body:`将执行 openclaw security audit --fix，自动应用：\n\n${(secAudit.value?.summary?.critical||0)} 个 critical + ${(secAudit.value?.summary?.warn||0)} 个 warn 的 remediation\n\n主要影响：\n• 18+ 个路径的 icacls 收紧（只允许你 + SYSTEM）\n• gateway / agents / credentials 等敏感目录\n\n执行后建议重启 gateway 验证。`
+      })) return;
+      secFixing.value = true;
+      showToast('🛠 正在应用安全修复（最长 2 分钟）…', 'warn');
+      try {
+        const d = await api('/api/security/fix', { method:'POST', headers:{'Content-Type':'application/json'}, body:'{}', timeout: 130000 });
+        const fa = d.fixesApplied||d.applied?.length||'?';
+        const er = d.errors||d.failed?.length||0;
+        showToast(`✅ 安全修复完成（${fa} 项已应用，${er} 项失败）`, er?'warn':'ok');
+        await loadSecAudit();
+      } catch(e) { showToast('修复失败: '+e.message, 'err'); }
+      finally { secFixing.value = false; }
+    }
+
+    // --- Doctor ---
+    const doctor = ref(null);
+    const doctorLoading = ref(false);
+    async function loadDoctor(){
+      doctorLoading.value = true;
+      try {
+        const d = await api('/api/doctor', { timeout: 310000 });
+        d.ts = Date.now();
+        doctor.value = d;
+      } catch(e) { showToast('doctor 失败: '+e.message, 'err'); }
+      finally { doctorLoading.value = false; }
+    }
+
+    // --- Memory search ---
+    const memQuery = ref('');
+    const memAgent = ref('main');
+    const memHits = ref([]);
+    const memRaw = ref('');
+    const memLoading = ref(false);
+    async function loadMemory(){
+      if (!memQuery.value.trim()) return;
+      memLoading.value = true;
+      memHits.value = [];
+      memRaw.value = '';
+      try {
+        const d = await api(`/api/memory/search?q=${encodeURIComponent(memQuery.value)}&agent=${encodeURIComponent(memAgent.value)}&limit=15`, { timeout: 40000 });
+        memHits.value = d.hits || [];
+        if (memHits.value.length === 0) memRaw.value = d.raw || '(无结果)';
+      } catch(e) { showToast('memory 搜索失败: '+e.message, 'err'); }
+      finally { memLoading.value = false; }
+    }
+
+    // --- Cron ---
+    const cronJobs = ref([]);
+    const cronLoading = ref(false);
+    const showCronAdd = ref(false);
+    async function loadCron(){
+      cronLoading.value = true;
+      try {
+        const d = await api('/api/cron/list', { timeout: 25000 });
+        cronJobs.value = d.jobs || [];
+      } catch(e) { showToast('cron 加载失败: '+e.message, 'err'); }
+      finally { cronLoading.value = false; }
+    }
+    async function cronToggle(j){
+      try {
+        await api('/api/cron/toggle', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id:j.id, enabled: !j.enabled }), timeout: 15000 });
+        await loadCron();
+      } catch(e) { showToast('切换失败: '+e.message, 'err'); }
+    }
+    async function cronRemove(j){
+      if(!await askConfirm({ title:'删除 cron 任务', danger:true, confirmText:'删除', body:`删除 "${j.displayName||j.name}"？` })) return;
+      try {
+        await api('/api/cron/remove', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ id:j.id }), timeout: 15000 });
+        showToast('已删除', 'ok');
+        await loadCron();
+      } catch(e) { showToast('删除失败: '+e.message, 'err'); }
+    }
+
+    // --- 工具权限（per-agent）---
+    // (2026-09-10 简化:group:web 是父组,已包含 web_search / web_fetch;
+    //   单独列会冗余让用户误以为需要重复勾选,所以折叠到 group:web 标签里说明)
+    const toolGroups = [
+      { id:'group:web', label:'🌐 联网 (含搜索/抓取)' },
+      { id:'browser', label:'🖥 浏览器' },
+      { id:'exec', label:'⚙ 执行命令' },
+      { id:'fs:write', label:'✍ 写文件' },
+      { id:'memory:write', label:'📝 写 memory' },
+      { id:'cron', label:'⏰ Cron' },
+    ];
+    async function toggleToolDeny(a, grp, checked){
+      const cur = a._toolsDeny || [];
+      const next = checked ? [...new Set([...cur, grp])] : cur.filter(x => x !== grp);
+      try {
+        const d = await api('/api/agent/tools/set', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ agent: a.id, deny: next }), timeout: 15000 });
+        if (d.ok) {
+          a._toolsDeny = next;
+          showToast(`✅ ${a.name||a.id} deny=${next.join(',')||'∅'}`, 'ok');
+        } else {
+          showToast('失败: '+(d.error||'?'), 'err');
+        }
+      } catch(e) { showToast('保存失败: '+e.message, 'err'); }
+    }
+
+    // --- Diff ---
+    const diffBak = ref('');
+    const diffResult = ref(null);
+    const diffLoading = ref(false);
+    async function loadDiff(){
+      if (!diffBak.value) return;
+      diffLoading.value = true;
+      try {
+        const d = await api(`/api/config/diff?path=${encodeURIComponent(diffBak.value)}`, { timeout: 15000 });
+        diffResult.value = d;
+        if (d.changes) showToast(`📊 差异: +${d.changes.filter(c=>c.op==='added').length} -${d.changes.filter(c=>c.op==='removed').length} ~${d.changes.filter(c=>c.op==='changed').length}`, 'ok');
+      } catch(e) { showToast('diff 失败: '+e.message, 'err'); }
+      finally { diffLoading.value = false; }
+    }
+
+    // --- Latency ---
+    const latencyResults = ref([]);
+    const latencyAt = ref(0);
+    const latencyLoading = ref(false);
+    async function loadLatency(){
+      latencyLoading.value = true;
+      latencyResults.value = [];
+      try {
+        const d = await api('/api/models/latency', { timeout: 60000 });
+        latencyResults.value = d.results || [];
+        latencyAt.value = d.at || Date.now();
+      } catch(e) { showToast('测活失败: '+e.message, 'err'); }
+      finally { latencyLoading.value = false; }
+    }
+
+    // ============ 新增 4 个能力（plugin/skill toggle, sandbox mode, cron add modal）============
+
+    // --- Cron 新建 modal ---
+    const cronAddForm = ref({ agent:'main', name:'', every:'', cron:'', at:'', message:'', command:'', disabled:false, displayName:'' });
+    const cronAddErr = ref('');
+    const cronAddSubmitting = ref(false);
+    function openCronAdd(){
+      cronAddForm.value = { agent: (agents.value[0]?.id) || 'main', name:'', every:'', cron:'', at:'', message:'', command:'', disabled:false, displayName:'' };
+      cronAddErr.value = '';
+      showCronAdd.value = true;
+    }
+    async function cronAddSubmit(){
+      cronAddErr.value = '';
+      const f = cronAddForm.value;
+      if (!f.name) return cronAddErr.value = '任务名必填';
+      if (!f.every && !f.cron && !f.at) return cronAddErr.value = '三种调度方式（every / cron / at）必须填一项';
+      if (!f.message && !f.command) return cronAddErr.value = '必须填 message 或 command 其中之一';
+      cronAddSubmitting.value = true;
+      try {
+        const d = await api('/api/cron/add', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(f), timeout: 25000 });
+        if (d.ok || d.id) {
+          showToast(`✅ 已创建 ${f.name} (id=${d.id?.slice(0,8)}…)`, 'ok');
+          showCronAdd.value = false;
+          await loadCron();
+        } else {
+          cronAddErr.value = d.error?.message || d.raw || JSON.stringify(d).slice(0, 200);
+        }
+      } catch(e) { cronAddErr.value = e.message; }
+      finally { cronAddSubmitting.value = false; }
+    }
+
     // 引导创建旧函数已移除（走 openclaw 内置 OAuth）
 
     // Auto-fill baseUrl when the selected provider changes
@@ -1716,13 +2342,6 @@ createApp({
     });
 
     onMounted(async () => {
-      // Probe auth status on first load. If server requires token and we
-      // don't have one stored, the next API call will trigger the modal.
-      try {
-        const r = await fetch('/api/auth/status');
-        const j = await r.json();
-        authRequired.value = !!j.required;
-      } catch {}
       await refresh();
       try { await loadOcInfo(); } catch (e) { /* 静默：查询失败不打扰 */ }
     });
@@ -1731,6 +2350,7 @@ createApp({
     // 跳过 /api/models（CLI 开销大，模型变化靠 probe/refresh 后的手动刷新），
     // 不触发 loading 态（避免闪烁），后台标签页自动暂停。
     let pollTimer = null;
+    let gwPollTimer = null;
     function startPolling(intervalMs = 30000) {
       if (pollTimer) clearInterval(pollTimer);
       pollTimer = setInterval(async () => {
@@ -1743,8 +2363,13 @@ createApp({
           ]);
         } catch (e) { /* 静默：瞬时失败下轮再试 */ }
       }, intervalMs);
+      // 单独一个更密的 gateway 健康轮询（10s），让状态点实时反映 up/down。
+      if (gwPollTimer) clearInterval(gwPollTimer);
+      gwPollTimer = setInterval(() => { if (!document.hidden) pollGatewayStatus(); }, 10000);
     }
     startPolling();
+    // 首次启动立即探一次，不要等 10s
+    pollGatewayStatus();
 
     // Global error handler — anything that throws during click handlers etc.
     // will be surfaced as a toast (in addition to the browser console). Catches
@@ -1771,25 +2396,37 @@ createApp({
       batchModel,uptimeStr,changedCount,groups,short,ws,sz,
       feishu,showFeishuBotModal,feishuBotForm,showAllowFromModal,allowFromId,allowFromScope,feishuDiag,diagFor,
       showGuidedBot,guidedBot,reg,regQrUrl,regMsg,regBotKey,
-      showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,
-      editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,
+      showProviderEdit,providerEdit,providerEditError,providerEditSaving,refreshingAll,refreshResults,refreshOkCount,refreshErrText,
+      editProvider,saveProviderEdit,deleteProvider,refreshAllProviders,restarting,restartGateway,starting,stopping,startGateway,stopGateway,gatewayUp,pollGatewayStatus,
       confirmDialog,askConfirm,
-      authToken,showAuthModal,authModalData,authRequired,setAuthToken,confirmAuthToken,cancelAuthToken,clearAuthToken,
       theme,toggleTheme,modelFilter,filteredGroups,
       refresh,apply,batchApply,resetSelection,probe,openCreate,createAgent,deleteAgent,
       showDefaultWsModal,defaultWsInput,defaultWsSaving,defaultWsError,openDefaultWsModal,saveDefaultWs,
-      ocInfo,ocRecentVersions,showOcUpdateModal,ocUpdateVersion,ocUpdateBusy,ocUpdateResult,openOcUpdateModal,doOcUpdate,loadOcInfo,
+      ocInfo,ocRecentVersions,showOcUpdateModal,ocUpdateVersion,ocUpdateBusy,ocUpdateResult,ocUpdateProgress,openOcUpdateModal,doOcUpdate,loadOcInfo,loadOcUpdateProgress,ocUpdateTime,ocUpdateLogEl,
       showInstallModal,installStatus,installForm,installBusy,installResult,openInstallModal,loadInstallStatus,installNodeLts,doInstallOpenclaw,
       showAgentEditModal,agentEditForm,agentEditSaving,openAgentEditModal,closeAgentEditModal,applyAgentEdit,
       agentEditNewId,agentRenaming,renameAgent,
       showTemplateModal,templateTarget,templateSel,templateApplying,openTemplateModal,closeTemplateModal,applyTemplate,
       agentTemplates,loadTemplates,
-      toolDenied,otherDenied,toggleTool,
+      toolDenied,otherDenied,otherDeniedShort,toggleTool,
+      AGENT_ROW_GRID,
       loadFiles,filterFiles,loadFileContent,saveFile,filePath,enterDir,goUp,
       loadBackups,manualBackup,backingUp,rollback,saveScene,applyScene,deleteScene,loadLogs,paths,loadPaths,openFolder,
       showAllBackups,toggleAllBackups,backupTotal,loadMoreLogs,
       loadFeishu,getFeishuBinding,feishuAgents,feishuBotAllowFrom,botAllowFromInput,addBotAllowFrom,removeBotAllowFrom,openFeishuBotModal,openFeishuBotModalFor,saveFeishuBot,deleteFeishuBot,addAllowFrom,openBotAllowFrom,removeAllowFrom,
-      startFeishuReg,pollReg,saveRegBot,closeGuidedBot
+      startFeishuReg,pollReg,saveRegBot,closeGuidedBot,
+
+      // ============ Ops 面板（13 个）============
+      anchors, scrollTo,
+      secAudit, secLoading, loadSecAudit, secFix, secFixing,
+      doctor, doctorLoading, loadDoctor,
+      memQuery, memAgent, memHits, memRaw, memLoading, loadMemory,
+      cronJobs, cronLoading, loadCron, cronToggle, cronRemove, showCronAdd,
+      toolGroups, toggleToolDeny,
+      diffBak, diffResult, diffLoading, loadDiff,
+      latencyResults, latencyAt, latencyLoading, loadLatency,
+      // 新增 4 个能力
+      cronAddForm, cronAddErr, cronAddSubmitting, openCronAdd, cronAddSubmit
     };
   }
 }).mount('#switcher-app');

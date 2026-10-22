@@ -19,6 +19,8 @@ const http = require('http');
 
 const TESTS = [];
 function test(name, fn) { TESTS.push({ name, fn }); }
+// 停用的测试：保留位置与原因，不计入失败
+function skip(name, reason) { TESTS.push({ name, fn: null, skip: reason }); }
 
 const SWITCHER_DIR = path.join(__dirname, '..');
 const SWITCHER_CJS = path.join(SWITCHER_DIR, 'switcher.cjs');
@@ -403,39 +405,46 @@ async function withAuthInstance(token, fn) {
     return exitCode;
 }
 
-test('GET /api/auth/status reports required=true when token set', () => withAuthInstance('secret-123', async () => {
-    const r = await http_get(`http://localhost:${TEST_PORT}/api/auth/status`);
-    if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
-    const j = JSON.parse(r.body);
-    if (j.required !== true) throw new Error(`expected required=true, got ${j.required}`);
-}));
+// test('GET /api/auth/status reports required=true when token set', () => withAuthInstance('secret-123', async () => {
+//     const r = await http_get(`http://localhost:${TEST_PORT}/api/auth/status`);
+//     if (r.status !== 200) throw new Error(`HTTP ${r.status}`);
+//     const j = JSON.parse(r.body);
+//     if (j.required !== true) throw new Error(`expected required=true, got ${j.required}`);
+// }));
 
-test('requests without token return 401', () => withAuthInstance('secret-123', async () => {
-    const r = await http_get(`http://localhost:${TEST_PORT}/api/agents`);
-    if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`);
-    const j = JSON.parse(r.body);
-    if (j.code !== 'AUTH_REQUIRED') throw new Error(`expected AUTH_REQUIRED, got ${j.code}`);
-}));
+// test('requests without token return 401', () => withAuthInstance('secret-123', async () => {
+//     const r = await http_get(`http://localhost:${TEST_PORT}/api/agents`);
+//     if (r.status !== 401) throw new Error(`expected 401, got ${r.status}`);
+//     const j = JSON.parse(r.body);
+//     if (j.code !== 'AUTH_REQUIRED') throw new Error(`expected AUTH_REQUIRED, got ${j.code}`);
+// }));
 
-test('requests with valid token succeed', () => withAuthInstance('secret-123', async () => {
-    const r = await new Promise((resolve, reject) => {
-        const req = http.request({
-            method: 'GET', hostname: 'localhost', port: TEST_PORT, path: '/api/agents',
-            headers: { 'Authorization': 'Bearer secret-123' }
-        }, (res) => { let b=''; res.on('data', c => b += c); res.on('end', () => resolve({status:res.statusCode, body:b})); });
-        req.on('error', reject); req.end();
-    });
-    if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
-    const j = JSON.parse(r.body);
-    if (!Array.isArray(j)) throw new Error('expected agents array');
-}));
+// test('requests with valid token succeed', () => withAuthInstance('secret-123', async () => {
+//     const r = await new Promise((resolve, reject) => {
+//         const req = http.request({
+//             method: 'GET', hostname: 'localhost', port: TEST_PORT, path: '/api/agents',
+//             headers: { 'Authorization': 'Bearer secret-123' }
+//         }, (res) => { let b=''; res.on('data', c => b += c); res.on('end', () => resolve({status:res.statusCode, body:b})); });
+//         req.on('error', reject); req.end();
+//     });
+//     if (r.status !== 200) throw new Error(`expected 200, got ${r.status}`);
+//     const j = JSON.parse(r.body);
+//     if (!Array.isArray(j)) throw new Error('expected agents array');
+// }));
 
-test('POST /api/auth/login verifies token', () => withAuthInstance('secret-123', async () => {
-    const good = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'secret-123' });
-    if (good.status !== 200 || !JSON.parse(good.body).ok) throw new Error('good token should pass');
-    const bad = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'wrong' });
-    if (bad.status !== 401) throw new Error(`wrong token should be 401, got ${bad.status}`);
-}));
+// test('POST /api/auth/login verifies token', () => withAuthInstance('secret-123', async () => {
+//     const good = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'secret-123' });
+//     if (good.status !== 200 || !JSON.parse(good.body).ok) throw new Error('good token should pass');
+//     const bad = await http_post(`http://localhost:${TEST_PORT}/api/auth/login`, { token: 'wrong' });
+//     if (bad.status !== 401) throw new Error(`wrong token should be 401, got ${bad.status}`);
+// }));
+
+
+
+skip("GET /api/auth/status reports required=true when token set", "鉴权功能（SWITCHER_TOKEN bearer token）已移除，本组测试停用；恢复鉴权时取消注释并把 skip 改回 test 即可");
+skip("requests without token return 401", "鉴权功能（SWITCHER_TOKEN bearer token）已移除，本组测试停用；恢复鉴权时取消注释并把 skip 改回 test 即可");
+skip("requests with valid token succeed", "鉴权功能（SWITCHER_TOKEN bearer token）已移除，本组测试停用；恢复鉴权时取消注释并把 skip 改回 test 即可");
+skip("POST /api/auth/login verifies token", "鉴权功能（SWITCHER_TOKEN bearer token）已移除，本组测试停用；恢复鉴权时取消注释并把 skip 改回 test 即可");
 
 test('quickParents finds drive roots on Windows (regression: D:\\ missed)', () => {
     // The listWindowsDrives helper enumerates all mounted drives. On Linux
@@ -464,8 +473,9 @@ test('quickParents finds drive roots on Windows (regression: D:\\ missed)', () =
 // -------- RUN --------
 
 (async () => {
-    let passed = 0, failed = 0;
+    let passed = 0, failed = 0, skipped = 0;
     for (const t of TESTS) {
+        if (t.fn === null) { console.log(`  SKIP  ${t.name} — ${t.skip}`); skipped++; continue; }
         try {
             const code = await t.fn();
             if (code === 0) { console.log(`  PASS  ${t.name}`); passed++; }
@@ -476,6 +486,6 @@ test('quickParents finds drive roots on Windows (regression: D:\\ missed)', () =
         }
     }
     try { fs.rmSync(TMP_ROOT, { recursive: true, force: true }); } catch {}
-    console.log(`\n  Result: ${passed} passed, ${failed} failed`);
+    console.log(`\n  Result: ${passed} passed, ${failed} failed, ${skipped} skipped`);
     process.exit(failed === 0 ? 0 : 1);
 })();
