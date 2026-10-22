@@ -1179,6 +1179,33 @@ let diagCacheAt = 0;
 // Cached openclaw provider catalog (30s TTL, from CLI).
 let provAvailCache = null;
 let provAvailCacheAt = 0;
+// in-flight 去重：同一时刻只允许一个 provider 能力 CLI 在跑
+let provAvailInFlight = null;
+
+// gateway 是否在服务（2.5s 超时的轻量 health 探测，5s 缓存）。
+// 存在的理由：openclaw CLI 会持有 openclaw 的 state 库，而 gateway 启动期间
+// state 库被占住会直接让 gateway bootstrap 失败（2026-10-22 实测：
+// "cli.main.gateway-run-bootstrap ... failed" / "The CLI command failed."）。
+// 所以 gateway 不在服务时，switcher 绝不能 spawn 任何 openclaw CLI。
+let gwReachCache = { at: 0, ok: false };
+async function gatewayReachable(){
+  const now = Date.now();
+  if (now - gwReachCache.at < 5000) return gwReachCache.ok;
+  const ok = await new Promise((resolve) => {
+    let done = false, req = null;
+    const finish = (v) => { if (done) return; done = true; try { if(req) req.destroy(); } catch{} resolve(v); };
+    try {
+      req = require('http').get('http://127.0.0.1:18888/health', { timeout: 2500 }, r => {
+        r.resume();
+        r.on('end', () => finish(r.statusCode === 200));
+      });
+      req.on('error', () => finish(false));
+      req.on('timeout', () => finish(false));
+    } catch { finish(false); }
+  });
+  gwReachCache = { at: now, ok };
+  return ok;
+}
 
 // 取 model 列表 — 2026.9+ 适配：
 // openclaw 把"可用模型"从 CLI 探测改为 agents.defaults.modelPolicy.allow 静态列表。
@@ -1850,6 +1877,11 @@ const srv = http.createServer(async (req,res)=>{
       const nowTs = Date.now();
       // TTL 必须大于前端轮询间隔（30s），否则每轮都 spawn 一次 channels status
       if (diagCache && nowTs - diagCacheAt < 90000) return json(res, diagCache);
+      // gateway 不在服务时不要 spawn CLI（会跟 gateway 启动抢 state 库）
+      if (!await gatewayReachable()) {
+        if (diagCache) return json(res, diagCache);
+        return json(res,{diagnostics:{},error:'Gateway 未就绪'},503);
+      }
       try{
         const sp=await runCli([CLI,'channels','status'],30000);
         const lines=(sp.out||'').split('\n').filter(l=>l.includes('Feishu'));
@@ -2042,27 +2074,42 @@ const srv = http.createServer(async (req,res)=>{
     if(method==='GET'&&p==='/api/providers/available') {
       if (cliMissing()) return json(res,{ok:false,error:'CLI not configured',hint:'set OPENCLAW_CLI env var'},503);
       const nowTs=Date.now();
-      // TTL 必须大于前端轮询间隔（30s），否则缓存永远不命中 → 每轮都 spawn CLI
-      if (provAvailCache && nowTs - provAvailCacheAt < 120000) return json(res, provAvailCache);
-      // 2026.9+ 多 agent 时该命令也要求 --agent
-      let defaultAgent = 'main';
-      try { defaultAgent = resolveDefaultAgentId(read()) || 'main'; } catch {}
-      // 该 CLI 实测要 94 秒（474 模型 × 10 个 agent 的 provider 能力矩阵），
-      // 原来的 20s 超时必然超时 → 接口恒返回 500。给足 150s。
-      const cliRes=await runCli([CLI,'capability','model','providers','--json','--agent',defaultAgent], 150000);
-      try {
-        const arr=JSON.parse(cliRes.out);
-        if (Array.isArray(arr)) {
-          const out=arr.map(x=>({
-            id:x.provider, count:x.count||0,
-            defaults:x.defaults||[], available:x.available!==false,
-            configured:!!x.configured, selected:!!x.selected,
-            baseUrl:(CATALOG.find(c=>c.id===x.provider)||{}).baseUrl||''
-          }));
-          provAvailCache=out; provAvailCacheAt=nowTs;
-          return json(res, out);
-        }
-      } catch(e){}
+      // TTL 拉到 10 分钟：该 CLI 实测 94 秒（474 模型 × 10 个 agent 的能力矩阵），
+      // TTL 太短会让前端 30s 轮询每轮都 spawn 一个 CLI —— 既堆积进程，
+      // 又在 gateway 启动窗口抢 state 库导致 gateway 启动失败。
+      if (provAvailCache && nowTs - provAvailCacheAt < 600000) return json(res, provAvailCache);
+      // gateway 不在服务时不要 spawn CLI
+      if (!await gatewayReachable()) {
+        if (Array.isArray(provAvailCache)) return json(res, provAvailCache);
+        return json(res,{ok:false,error:'Gateway 未就绪，暂不查询供应商能力'},503);
+      }
+      // in-flight 去重：同时只允许一个 CLI
+      if (provAvailInFlight) {
+        await provAvailInFlight;
+        if (Array.isArray(provAvailCache)) return json(res, provAvailCache);
+        return json(res,{ok:false,error:'查询中'},503);
+      }
+      provAvailInFlight = (async()=>{
+        // 2026.9+ 多 agent 时该命令也要求 --agent
+        let defaultAgent = 'main';
+        try { defaultAgent = resolveDefaultAgentId(read()) || 'main'; } catch {}
+        // 给足 150s（实测 94s）
+        const cliRes=await runCli([CLI,'capability','model','providers','--json','--agent',defaultAgent], 150000);
+        try {
+          const arr=JSON.parse(cliRes.out);
+          if (Array.isArray(arr)) {
+            provAvailCache=arr.map(x=>({
+              id:x.provider, count:x.count||0,
+              defaults:x.defaults||[], available:x.available!==false,
+              configured:!!x.configured, selected:!!x.selected,
+              baseUrl:(CATALOG.find(c=>c.id===x.provider)||{}).baseUrl||''
+            }));
+            provAvailCacheAt=Date.now();
+          }
+        } catch(e){}
+      })();
+      try { await provAvailInFlight; } finally { provAvailInFlight=null; }
+      if (Array.isArray(provAvailCache)) return json(res, provAvailCache);
       return json(res,{ok:false,error:'Failed to list providers'},500);
     }
     if(method==='GET'&&p==='/api/models') {
